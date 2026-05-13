@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+*.log
+
+# Data — never committed (regeneratable from synth)
+data/raw/
+data/interim/
+data/processed/
+
+# Runs — large; pull selectively if needed
+runs/*/checkpoints/
+runs/*/loss.jsonl
+
+# Local secrets
+.env
