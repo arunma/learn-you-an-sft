@@ -3,26 +3,26 @@
 Three subdirectories, one direction of flow:
 
 ```
-raw/        ← downloaded sources, untouched          (Stage 1 + manual download)
-  └── bash_org.jsonl, rjokes/, sarc.flat.jsonl, dadjokes.jsonl
+raw/        ← unused in the pure-synth era                              (kept as a hook)
 
-interim/    ← unified Pair schema, per source        (Stage 2a — ingest/)
-  └── bash_org.pairs.jsonl, rjokes.pairs.jsonl, sarc.pairs.jsonl, dadjokes.pairs.jsonl
+interim/    ← Pair JSONL from synthesis runs                            (Stage 1.5 — synthesis/)
+  └── gemini_synth_v0.pairs.jsonl, gemini_synth_v1.pairs.jsonl, ...
 
-processed/  ← filtered, deduped, quality-scored, split into train/val   (Stage 2b — coming next)
+processed/  ← filtered, deduped, split into train/val                   (Stage 2b — filter/)
   └── train.jsonl, val.jsonl, manifest.json
 ```
 
-Never edit files under `raw/`. If a source's format changes upstream,
-delete and re-download — that way the manifest's content hashes stay
-honest.
+`raw/` is unused for now. It existed for the original scraped-data
+plan; we keep the directory in case we ever want to mix human-written
+data back in (e.g. a small curated set the user hand-edits).
 
-`interim/` is fully reproducible from `raw/` by re-running the ingest
-scripts. Cheap to regenerate. Don't commit it.
+`interim/` is fully reproducible from a synthesis run + its seed +
+the persona prompt. Don't commit it.
 
-`processed/` is the only directory training reads from.
+`processed/` is the only directory training reads from. Don't commit
+either — it's regeneratable from `interim/` + the filter config.
 
 ## See also
 
-- `ingest/README.md` — Stage 2a: source ingestion (this is built)
-- (coming next) Stage 2b README — filtering, dedup, quality, toxicity
+- `ingest/README.md` — the canonical `Pair` schema (now schema-only, no source-specific code)
+- `filter/README.md` — Stage 2b: normalize → language → dedup → train/val split + manifest
