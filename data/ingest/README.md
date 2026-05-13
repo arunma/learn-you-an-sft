@@ -1,10 +1,9 @@
 # `data/ingest/` — the canonical `Pair` schema
 
-This used to be where four scraped sources (bash.org, rJokesData,
-SARC, dad jokes) got converted into a unified shape before filtering.
-After the 2026-05-13 pivot to **pure synth**, those source-specific
-ingesters are gone. What remains is the schema itself — the one shape
-every downstream stage agrees on.
+The home of the canonical `Pair` shape every downstream stage agrees
+on. In the pure-synth pipeline this module is intentionally thin:
+only the schema and JSONL helpers — producers of training data live
+in `synthesis/` and write directly to `data/interim/`.
 
 ## The `Pair` shape
 

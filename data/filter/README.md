@@ -11,9 +11,9 @@ filters, write `data/processed/{train,val}.jsonl` + `manifest.json`.
 | 2 | language (fasttext) | ~1 ms | 5–10% | Cheap-ish; loads a 125 MB model once |
 | 3 | dedup (exact + MinHash) | ~2 ms | 20–40% | Medium; MinHash LSH is sub-linear |
 
-Quality and toxicity gates are intentionally absent: Gemini-synth pairs
-meet a quality floor by construction (no upvote-scraped junk), and a
-toxicity filter would gut the casually-profane persona we're after.
+Quality and toxicity gates are intentionally absent: Gemini-synth
+pairs meet a quality floor by construction, and a toxicity filter
+would gut the casually-profane persona we're after.
 
 Total: 15K input → ~10–13K output pairs in a few minutes on CPU.
 

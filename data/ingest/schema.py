@@ -1,17 +1,16 @@
 """Canonical (prompt, response) pair schema used downstream by SFT.
 
-Every source — bash.org, rJokesData, SARC, dad jokes — gets converted
-into this shape before any filtering or training. Two reasons:
+Every producer of training data converts into this shape before any
+filtering or training. Two reasons:
 
 1. The training code only ever sees one schema, regardless of how
-   many sources you stack.
-2. Source-specific quirks live in source-specific ingesters, where they
-   belong, not in the training loop.
+   many producers you stack.
+2. Producer-specific quirks live in the producer, where they belong,
+   not in the training loop.
 
-The `score` field is the most important design choice here: it's
-normalised to [0, 1] across sources so the filter pipeline (Stage 2b)
-can use a single threshold across the whole mix. Each ingester is
-responsible for its own normalisation.
+The `score` field is optional and producer-defined: a value in [0, 1]
+if the producer has a quality signal, otherwise None. Stage 2b can
+threshold on it when present.
 """
 from __future__ import annotations
 

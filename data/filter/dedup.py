@@ -1,13 +1,12 @@
 """Two-stage deduplication: exact hash + MinHash near-duplicate.
 
 Stage 1 — exact dedup via SHA1 of the response text.
-  Catches verbatim duplicates (the same joke posted to /r/Jokes 50
+  Catches verbatim duplicates (the same response generated multiple
   times). O(N) memory, O(N) time. The bulk of duplicates fall here.
 
 Stage 2 — near-duplicate via MinHash LSH (Locality Sensitive Hashing).
-  Catches paraphrases — reposts with a word changed, copy-pastes
-  with different formatting, jokes ported across threads with minor
-  edits.
+  Catches paraphrases — small word substitutions, format variations,
+  near-identical retellings.
 
   MinHash works by hashing each document into a signature of K hash
   values such that the Jaccard similarity of two signatures
@@ -18,10 +17,9 @@ Stage 2 — near-duplicate via MinHash LSH (Locality Sensitive Hashing).
   Library: datasketch — battle-tested, simple API. Resist the urge
   to roll your own; getting LSH banding right is fiddly.
 
-Threshold: 0.7 Jaccard similarity on 5-grams. Catches reposts and
-trivial edits but lets through *structurally* similar jokes (same
-setup, different punchline) — which is what we want, because joke
-variants ARE the training signal.
+Threshold: 0.7 Jaccard similarity on 5-grams. Catches near-duplicates
+and trivial edits but lets through *structurally* similar pairs (same
+setup, different completion) — variants ARE the training signal.
 """
 from __future__ import annotations
 
@@ -72,9 +70,9 @@ def dedupe(pairs: Iterable[Pair]) -> Iterable[Pair]:
     lsh = MinHashLSH(threshold=JACCARD_THRESHOLD, num_perm=NUM_PERM)
 
     for i, pair in enumerate(pairs):
-        # Exact dedup on the response text — the prompt is often
-        # synthetic (rJokes templates), so duplicate prompts are
-        # expected and don't indicate a duplicate joke.
+        # Exact dedup on the response text — the prompt may repeat
+        # across pairs (templated questions), so duplicate prompts
+        # don't necessarily indicate duplicate content.
         h = _sha1(pair.response)
         if h in seen_hashes:
             continue

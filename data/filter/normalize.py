@@ -2,10 +2,9 @@
 
 Two principles:
 
-1. Be aggressive about WEIRD characters (mojibake from old IRC clients,
-   smart quotes from Reddit's WYSIWYG editor, zero-width joiners, BOMs).
-   They don't help the model learn humor and they bloat tokenizer
-   vocabulary use.
+1. Be aggressive about WEIRD characters (mojibake, smart quotes,
+   zero-width joiners, BOMs). They don't help the model learn voice
+   and they bloat tokenizer vocabulary use.
 
 2. Be CONSERVATIVE about meaning-preserving content. Don't lowercase,
    don't strip punctuation, don't unify spelling. Sarcasm leans
@@ -14,8 +13,9 @@ Two principles:
    thing we're trying to teach.
 
 We do replace URLs and emails with `<URL>` / `<EMAIL>` placeholders.
-Real URLs in jokes are usually irrelevant noise (the joke would land
-the same with any URL), and they're a common mojibake/PII vector.
+Concrete URLs in responses are usually irrelevant noise (the reply
+would land the same with any URL), and they're a common mojibake /
+PII vector.
 """
 from __future__ import annotations
 

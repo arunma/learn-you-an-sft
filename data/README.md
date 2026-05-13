@@ -12,9 +12,9 @@ processed/  ← filtered, deduped, split into train/val                   (Stage
   └── train.jsonl, val.jsonl, manifest.json
 ```
 
-`raw/` is unused for now. It existed for the original scraped-data
-plan; we keep the directory in case we ever want to mix human-written
-data back in (e.g. a small curated set the user hand-edits).
+`raw/` is unused for now. Kept as a hook in case we later want to
+mix in hand-curated data (a small set the user hand-edits) alongside
+the synth corpus.
 
 `interim/` is fully reproducible from a synthesis run + its seed +
 the persona prompt. Don't commit it.
