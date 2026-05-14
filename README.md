@@ -10,7 +10,12 @@ project picks up where that one ends — taking a pre-trained base model
 and fine-tuning it on (prompt, response) pairs synthesised by Gemini
 2.5 Pro, then judging the result with Claude Haiku 4.5.
 
-Full context, locked decisions, and the journey of pivots: see
+**Learning SFT from first principles?** Start with
+[TUTORIAL.md](TUTORIAL.md) — a copywork walkthrough covering
+(prompt, response) pair design, chat templates, loss masking, and
+batching, with runnable code for each lesson.
+
+Full project context, locked decisions, and ops practices: see
 [HANDOFF.md](HANDOFF.md).
 
 ## Two parallel training pipelines, same data, same eval
