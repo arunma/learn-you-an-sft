@@ -14,7 +14,8 @@ dependencies = [
   "tqdm>=4.65",
 
   # Stage 1.5 — Gemini teacher (synthesis)
-  "google-generativeai>=0.7",
+  "google-genai>=1.0",   # new SDK; replaces deprecated google-generativeai
+  "python-dotenv>=1.0",   # load GEMINI_API_KEY etc. from .env
 
   # Stage 2.5 — Claude Haiku judge
   "anthropic>=0.30",

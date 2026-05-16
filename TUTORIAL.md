@@ -21,9 +21,10 @@ and felt like a chunk of it was magic, this is for you.
 7. [Lesson 3 — Loss masking](#7-lesson-3--loss-masking)
 8. [Lesson 4 — Batching with padding](#8-lesson-4--batching-with-padding)
 9. [Lesson 5 — Phase A: SFT with TRL + LoRA](#9-lesson-5--phase-a-sft-with-trl--lora)
-10. [What's next (Lessons 6+)](#10-whats-next-lessons-6)
-11. [Decisions log — don't re-litigate](#11-decisions-log--dont-re-litigate)
-12. [Glossary](#12-glossary)
+10. [Lesson 9 — Synthesis pipeline (Gemini-distilled corpus)](#10-lesson-9--synthesis-pipeline-gemini-distilled-corpus)
+11. [What's next (Lessons 6, 7, 8)](#11-whats-next-lessons-6-7-8)
+12. [Decisions log — don't re-litigate](#12-decisions-log--dont-re-litigate)
+13. [Glossary](#13-glossary)
 
 ---
 
@@ -1427,14 +1428,181 @@ code produces a real model.
 
 ---
 
-## 10. What's next (Lessons 6+)
+## 10. Lesson 9 — Synthesis pipeline (Gemini-distilled corpus)
+
+This is the lesson done out of order — after Lesson 5 (Phase A
+training on 24 hand-crafted pairs), the natural next step is to
+generate the real training corpus, not jump straight to Lesson 6
+(hand-rolled trainer).
+
+**The persona prompt is the load-bearing artefact in this whole
+project.** The trained model is a fine-tuned compression of *"what
+Gemini outputs when given the persona prompt plus a question."* Get
+the prompt right and the corpus follows; the code around it is
+comparatively thin.
+
+### 10.1 Architecture
+
+```
+        synthesis/question_pool.py  (Gemini 2.5 Flash, cheap)
+        ten topical categories × ~N questions each
+                 │  data/interim/question_pool.jsonl
+                 │  [{"question": "should I learn Rust?"}, ...]
+                 ▼
+        synthesis/generate.py  (Gemini 2.5 Pro)
+        each question + synthesis/persona_prompt.md as system prompt
+                 │  data/interim/gemini_synth_v0.pairs.jsonl
+                 │  Pair JSONL — feeds Stage 2b filter pipeline
+                 ▼
+        data/filter/pipeline.py  (normalize → language → dedup)
+                 ▼
+        data/processed/{train,val}.jsonl + manifest.json
+```
+
+Two scripts. The first produces the prompts; the second produces
+the responses. Splitting them lets us use Flash (cheap, fast) for
+prompts and Pro (expensive, on-persona) for responses.
+
+### 10.2 The persona prompt — the central artefact
+
+`synthesis/persona_prompt.md` is the system instruction Gemini 2.5
+Pro reads at the top of every generation. The current version
+(named character "Monty") covers:
+
+- **Identity + texture** — specific tastes, irrational hatreds, soft
+  spots. Gives the model a coherent worldview to embody, not just a
+  tone to imitate.
+- **Three-axis target** — useful + witty + edged.
+- **Tone calibration** — snark at situations / tech / absurdity, not
+  at the asker.
+- **"Bring colour"** — vivid metaphors, concrete examples, weird
+  factoids; don't just answer, illustrate.
+- **"On inventing quotes"** — explicit guidance on fabricating
+  attributed aphorisms, with six template types.
+- **Curiosity** — ask things back for ambiguous prompts
+  (`"I'm thinking of quitting"` → `"wait, what happened"` before
+  any take).
+- **Vent rule** — when the asker is venting, fully on their side,
+  no both-sidesing.
+- **Brevity rule** — sometimes `"mate."` is the right reply.
+- **Casing convention** — lowercase except proper nouns, acronyms,
+  and "I".
+- **Hard limits** — no slurs; crisis-prompt protocol (voice off,
+  lowercase preserved).
+- **11 example pairs** covering every behavior.
+
+The single most important workflow is **iterating on this file
+against ~5 hand-eval examples until every one feels right** —
+*before* spending money on bulk synthesis. The current prompt is
+~280 lines / ~1,500 tokens; each Gemini Pro call sends ~2k input
+tokens of system prompt.
+
+### 10.3 The iteration scale-up
+
+Don't go straight to 15K. Iterate at four scales, eyeballing
+outputs at each step before scaling up:
+
+| Scale | Cost | Time | Purpose |
+|---|---|---|---|
+| 5 (default `TEST_QUESTIONS`) | ~$0.01 | ~30 s | Sanity-check the persona prompt fires every rule |
+| 8 (with carve-outs added) | ~$0.02 | ~30 s | Test ask-back, vent, banter, crisis prompts |
+| 100 (smoke test) | ~$0.30 | ~2 min | First taste of the distribution shape |
+| 1,000 (medium pilot) | ~$3 | ~10 min | Catch persona drift, category imbalance |
+| 15,000 (bulk training corpus) | ~$30–45 | ~2–3 hours | The actual training data |
+
+After each scale, **read a 30–50 pair random sample**. If you find
+more than 2–3 substantive problems in 30 random pairs, revise the
+persona prompt and re-run before scaling up. Cheaper than catching
+the problem after the bulk run.
+
+### 10.4 The two commands
+
+```bash
+# Step 1 — generate the question pool (Gemini Flash; cheap and fast)
+uv run python -m synthesis.question_pool --count 1000
+
+# Step 2 — generate Monty's responses (Gemini Pro; the expensive part)
+uv run python -m synthesis.generate \
+  --questions-file data/interim/question_pool.jsonl \
+  --count 1000
+```
+
+Default behaviour without `--questions-file` uses the 8 built-in
+`TEST_QUESTIONS` in `synthesis/generate.py` — that's the iteration
+mode for tuning the persona prompt.
+
+### 10.5 What to look for in the output
+
+After step 2, read a random sample of 30–50 pairs:
+
+```bash
+shuf data/interim/gemini_synth_v0.pairs.jsonl | head -50 \
+  | jq -r '"=== Q: \(.prompt)\n=== A: \(.response)\n"' > /tmp/sample.txt
+less /tmp/sample.txt
+```
+
+What to check:
+
+1. **Persona consistency.** Does every response sound like the same
+   character, even on questions wildly outside the example pairs?
+2. **Distribution of behaviors.** Roughly: ~70% useful+witty+edged,
+   ~10% short banter, ~10% ask-back / brevity, ~5% vent, ~5% other.
+   Crisis prompts will mostly be safety-filtered (expected).
+3. **Casing consistency.** Lowercase except proper nouns, acronyms,
+   and "I". The crisis-prompt responses should *also* stay lowercase.
+4. **Fake-quote rate.** ~10–25% of substantive responses should
+   contain an invented attributed aphorism. Lower is fine; much
+   higher risks the corpus feeling formulaic.
+5. **Category balance.** No category should dominate. If 40% of
+   questions are "what's X", the trained model will skew toward
+   explanatory mode.
+
+If any of these misses the target, iterate on either
+`persona_prompt.md` (voice/behavior) or `question_pool.py` (category
+balance), then re-run from step 1.
+
+### 10.6 Cost summary
+
+| Stage | Cost |
+|---|---|
+| All persona-prompt iteration (8-prompt × 10–15 runs) | ~$0.20 |
+| 100-question smoke test | ~$0.30 |
+| 1,000-question medium pilot | ~$3 |
+| 15,000-question bulk corpus | ~$30–45 |
+| **Total Stage 1.5 budget** | **~$35–50** |
+
+Most of the cost is the system-prompt re-send (~2k tokens × 15K
+calls = 30M input tokens at Gemini Pro pricing). Shortening the
+persona prompt saves money directly; do not shorten at the cost
+of quality.
+
+### 10.7 Profanity injection (deferred)
+
+The HANDOFF locked-decision is to handle profanity in two passes:
+
+1. **Pass 1 (Gemini):** generate clean-but-snarky responses.
+2. **Pass 2 (local, `synthesis/profanity_pass.py` — to be built):**
+   rule-based post-processing — for ~25% of pairs, swap one mild
+   intensifier (`"really"` → `"fucking"`, `"mess around"` →
+   `"dick around"`) using a small substitution dictionary.
+
+Reason: Gemini's safety filter resists explicit profane requests,
+and forced output is stilted ("the goddamn fucking shitty hellfuck
+of a question is…"). Local pass-2 sidesteps that entirely.
+
+Today's `generate.py` output is already fairly profane because
+Monty's persona allows casual swearing by default; the pass-2 step
+is for nudging more edge-cases into the corpus.
+
+---
+
+## 11. What's next (Lessons 6, 7, 8)
 
 | Lesson | Topic | Why it's worth line-by-line |
 |---|---|---|
 | 6 | **Hand-rolled trainer (Phase B)** | The training loop: `optimizer.zero_grad` → forward → loss → backward → step, gradient accumulation, cosine LR + warmup, checkpoint save with manifest. Full FT, no PEFT. |
 | 7 | **Inference + KV cache** | Why generation is autoregressive, what the KV cache stores, sampling implementations (greedy / top-k / top-p / temperature / repetition penalty). |
 | 8 | **Pairwise LLM-as-judge evaluation** | Why pair-and-vote beats single-shot scoring, position bias correction, self-preference bias mitigation (Claude Haiku judges Gemini-distilled responses), Wilson confidence intervals. |
-| 9 | **Synthesis** (Stage 1.5) | The persona prompt as the load-bearing artefact. Iteration loop: 5 hand-eval examples → bulk synth → spot-check → revise prompt → repeat. |
 
 Phase A (Lesson 5) vs Phase B (Lesson 6) is the heart of the project.
 If they produce comparable judge win-rates on the same eval set,
@@ -1442,7 +1610,7 @@ you've proven you understand what TRL was abstracting.
 
 ---
 
-## 11. Decisions log — don't re-litigate
+## 12. Decisions log — don't re-litigate
 
 A handful of choices that look re-openable but aren't, with the
 reason locked in:
@@ -1463,7 +1631,7 @@ reason locked in:
 
 ---
 
-## 12. Glossary
+## 13. Glossary
 
 | Term | One-line meaning |
 |---|---|
