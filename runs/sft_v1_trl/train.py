@@ -95,10 +95,10 @@ LORA_DROPOUT = 0.05
 LORA_TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj"]
 
 # ----- Training config -----
-EPOCHS = 10              # aggressive overfit on 24 examples is the point
-BATCH_SIZE = 4
+EPOCHS = 3               # H100 setting: 13K Gemini pairs × 3 ≫ 24 × 10 of signal
+BATCH_SIZE = 16          # H100 setting: 80GB VRAM leaves plenty of room for 0.5B + LoRA
 LEARNING_RATE = 2e-4     # higher than full-FT because only ~1% of weights move
-MAX_SEQ_LENGTH = 512     # all our examples are well under this
+MAX_SEQ_LENGTH = 1024    # H100 setting: longest Monty responses approach ~500 tokens; 512 truncates
 
 
 def build_dataset() -> Dataset:
@@ -132,7 +132,7 @@ def main() -> None:
 
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_ID,
-        dtype=torch.float32,  # fp32 is most portable; switch to bf16 on H100
+        dtype=torch.bfloat16,  # H100 native; matches `bf16=True` in SFTConfig below
     )
 
     # ---- LoRA configuration ----
@@ -160,9 +160,9 @@ def main() -> None:
         save_strategy="epoch",
         save_total_limit=1,
         report_to="none",          # no wandb/tensorboard auto-init
-        bf16=False,                # off for Mac portability; flip on H100
+        bf16=True,                 # H100 setting (Mac CPU build: set False + dtype=fp32)
         fp16=False,
-        gradient_checkpointing=False,
+        gradient_checkpointing=True,  # ~10% slower, ~30% VRAM headroom — cheap insurance
         # Modern OOTB replacement for DataCollatorForCompletionOnlyLM.
         # TRL applies the chat template, finds the assistant turn via
         # the Jinja {% generation %} blocks, and masks everything else
