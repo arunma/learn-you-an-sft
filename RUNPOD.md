@@ -1,0 +1,517 @@
+# RunPod — Training on H100 (operations playbook)
+
+A step-by-step guide for actually running training on a cloud H100,
+not the conceptual content from [TUTORIAL.md](TUTORIAL.md). Goes
+from *"I have a working training script locally"* to *"the adapter
+is back on my Mac, the pod is terminated, and the cost is logged."*
+
+This is the operator's manual. Read it once end-to-end before
+launching anything.
+
+---
+
+## Table of contents
+
+1. [When to use RunPod (vs Mac local)](#1-when-to-use-runpod-vs-mac-local)
+2. [Pre-flight checklist — do BEFORE clicking deploy](#2-pre-flight-checklist--do-before-clicking-deploy)
+3. [Launching a pod](#3-launching-a-pod)
+4. [Connecting (SSH)](#4-connecting-ssh)
+5. [Code + environment setup](#5-code--environment-setup)
+6. [Getting the training data onto the pod](#6-getting-the-training-data-onto-the-pod)
+7. [Adjusting training config for H100](#7-adjusting-training-config-for-h100)
+8. [Running training under tmux](#8-running-training-under-tmux)
+9. [Pulling the checkpoint back](#9-pulling-the-checkpoint-back)
+10. [**Terminating the pod**](#10-terminating-the-pod-critical)
+11. [Cost ledger discipline](#11-cost-ledger-discipline)
+12. [Failure modes](#12-failure-modes)
+13. [End-to-end cheat sheet](#13-end-to-end-cheat-sheet)
+
+---
+
+## 1. When to use RunPod (vs Mac local)
+
+| Scenario | Where to run | Why |
+|---|---|---|
+| Lesson 5's 24-example smoke test | **Mac local** | 2–3 min on CPU. Free. |
+| Lesson 9 synthesis (Gemini API calls) | **Mac local** | No GPU needed. API-bound, not compute-bound. |
+| Lesson 2b filter pipeline | **Mac local** | Few minutes on CPU. fasttext model is the bottleneck. |
+| Real training run on 15K examples | **RunPod H100** | Mac CPU would take hours; MPS is uneven. H100 = 10–20 minutes. |
+| Phase B hand-rolled trainer on 15K | **RunPod H100** | Same as above. |
+| Ablation runs (3–4 short experiments) | **RunPod H100** | Each ~10 min. Cheaper to batch them in one pod session than relaunch. |
+
+**Crossover heuristic:** if the training run takes > 30 minutes on
+Mac, it's worth $2 of H100 time to get it done in under 15.
+
+---
+
+## 2. Pre-flight checklist — do BEFORE clicking deploy
+
+The single most expensive mistake is to launch a pod and discover
+you forgot something. The H100 meter starts the second the pod is
+running, even if you're just sitting at the prompt thinking.
+
+- [ ] **Lesson 9 done.** `data/processed/train.jsonl` exists, has
+  ~15K rows. Verify with `wc -l data/processed/train.jsonl`.
+- [ ] **manifest.json exists** at `data/processed/manifest.json`,
+  reproducibility hashes recorded.
+- [ ] **Code is on GitHub `main`.** Don't fix bugs on the pod — fix
+  locally, push, then `git pull` on the pod.
+  ```bash
+  git status                # should show nothing
+  git log -1 --oneline      # should match origin/main
+  git ls-remote origin main # should match local HEAD
+  ```
+- [ ] **RunPod account funded.** ~$10 buys ~3–4 hours of H100. The
+  full Phase A + Phase B + ablations campaign should fit under $20.
+- [ ] **Calendar reminder set** for 1 hour after planned launch.
+  Single most important habit; see § 10.
+- [ ] **`runs/COSTS.md` ready** to log this session.
+- [ ] **Estimate the run time** so you know what "too long" looks
+  like. If your training-step estimate says 12 minutes and you're
+  at 40 minutes, something is wrong — don't let it silently grind.
+
+If any of these isn't done, **don't launch the pod yet**. Step away,
+finish prep, come back.
+
+---
+
+## 3. Launching a pod
+
+### Pick the GPU
+
+| Tier | GPU | Approx $/hr (community) | When to use |
+|---|---|---|---|
+| Cheap | RTX 4090 24 GB | $0.40–$0.60 | Quick LoRA on small models (≤ 1B) |
+| Standard | A100 40 GB | $0.99–$1.49 | Mid-size models (1–7B) |
+| **What we use** | **H100 80 GB SXM5** | **$2.69–$2.99** | **Fast Phase A / Phase B on Qwen2.5-0.5B (overkill but cheap per minute)** |
+
+For our 0.5B model, even an RTX 4090 is enough — H100 is overkill.
+But the per-minute cost difference is small ($0.01/min vs $0.05/min)
+and the H100's bandwidth makes runs predictable. Pick what's
+available.
+
+### Template
+
+Choose the **PyTorch** template. It comes with:
+- Python 3.10 or 3.11
+- CUDA + PyTorch pre-installed
+- SSH access enabled
+- ~50 GB persistent volume
+
+Other templates (TensorFlow, raw Ubuntu) work but require more
+setup.
+
+### Deploy
+
+1. Click **Deploy** on the chosen GPU.
+2. Confirm:
+   - GPU: H100 80GB (or your chosen tier)
+   - Disk: ≥ 30 GB (default fine)
+   - Template: PyTorch
+   - Region: closest to you for SSH latency (US-East, EU-Central, etc.)
+3. Wait for the pod status to show **Running** (~30 seconds).
+4. Copy the **SSH connection string** from the pod's "Connect" tab.
+
+It usually looks like:
+
+```
+ssh root@<host> -p <port> -i ~/.ssh/id_ed25519
+```
+
+---
+
+## 4. Connecting (SSH)
+
+If RunPod doesn't already have your SSH public key on file, add it
+first: **Settings → SSH keys → paste contents of `~/.ssh/id_ed25519.pub`**.
+(Or use your `id_ed25519_arunma.pub` if you keep keys per-identity.)
+
+Then from your Mac:
+
+```bash
+ssh root@<host> -p <port>
+```
+
+First-time host-key prompt — say yes. You should land at
+`root@<container-id>:~#`.
+
+Quick sanity checks:
+
+```bash
+nvidia-smi             # confirm GPU is visible
+python --version       # 3.10+
+df -h /                # check disk
+```
+
+---
+
+## 5. Code + environment setup
+
+```bash
+# Clone the repo (HTTPS works for public repos; no auth needed)
+cd /workspace
+git clone https://github.com/arunma/learn-you-an-sft.git
+cd learn-you-an-sft
+
+# Install uv if not present (it's faster than pip; the PyTorch
+# template usually doesn't ship it)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env
+
+# Create venv + install everything from pyproject.toml
+uv venv
+uv pip install -e .
+
+# bitsandbytes is in pyproject only for Linux — verify it installed
+python -c "import bitsandbytes; print(bitsandbytes.__version__)"
+```
+
+That last line is worth running. `bitsandbytes` is the 8-bit
+optimizer + quantization library; macOS doesn't have it (per the
+PEP 508 marker in `pyproject.toml`). On Linux/CUDA you want it.
+
+---
+
+## 6. Getting the training data onto the pod
+
+`data/processed/*.jsonl` is gitignored — for good reason; it's
+regenerable and large. Three options for getting it onto the pod:
+
+### Option A: `scp` from your Mac (simplest for a single run)
+
+From your **Mac** (in a separate terminal, not the SSH session):
+
+```bash
+cd /Users/arunmanivannan/projects/ai/learn-you-an-sft
+
+scp -P <pod-port> \
+  data/processed/train.jsonl \
+  data/processed/val.jsonl \
+  data/processed/manifest.json \
+  root@<host>:/workspace/learn-you-an-sft/data/processed/
+```
+
+Pros: no cloud storage needed. Cons: ties this pod to your laptop;
+not reproducible if you launch another pod later.
+
+### Option B: Push to HuggingFace Hub (reproducible)
+
+On the **Mac**:
+
+```bash
+huggingface-cli login   # one-time, paste your HF token
+
+python -c "
+from datasets import Dataset
+import json
+rows = [json.loads(l) for l in open('data/processed/train.jsonl')]
+Dataset.from_list(rows).push_to_hub('arunma/learn-you-an-sft-train', private=True)
+"
+```
+
+On the **pod**:
+
+```bash
+huggingface-cli login   # paste same token
+python -c "
+from datasets import load_dataset
+ds = load_dataset('arunma/learn-you-an-sft-train', split='train')
+ds.to_json('data/processed/train.jsonl')
+"
+```
+
+Pros: reproducible — any future pod gets identical data. Cons:
+extra setup; private dataset on HF.
+
+### Option C: Generate synth ON the pod
+
+```bash
+export GEMINI_API_KEY=...
+uv run python -m synthesis.generate --count 15000
+uv run python -m data.filter.pipeline
+```
+
+Pros: zero local prep. Cons: you're paying GPU rates while Gemini
+API calls run (which is CPU-bound). **Don't do this for cost
+reasons.** Always do data prep on the cheapest compute available
+(your Mac).
+
+**Recommendation: Option A for first run, Option B for repeatable
+training.**
+
+---
+
+## 7. Adjusting training config for H100
+
+Open `runs/sft_v1_trl/train.py` and flip a few knobs that were
+conservative for Mac portability:
+
+```python
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_ID,
+    dtype=torch.bfloat16,           # was torch.float32 on Mac
+)
+
+# ... and in SFTConfig:
+
+config = SFTConfig(
+    ...,
+    per_device_train_batch_size=16,    # was 4 on Mac; H100 has headroom
+    gradient_accumulation_steps=1,     # explicit; bump if VRAM gets tight
+    bf16=True,                          # was False on Mac
+    fp16=False,
+    gradient_checkpointing=True,        # save VRAM, ~10% slowdown
+    ...
+)
+
+# Drop EPOCHS now that we have 15K examples instead of 24:
+EPOCHS = 3       # was 10 — at 15K examples, 3 epochs is plenty
+```
+
+Mental math for the new run:
+- 15,000 examples ÷ 16 batch_size = **938 steps/epoch**
+- 3 epochs × 938 = **2,814 total steps**
+- H100 step time: ~250–400 ms for 0.5B + LoRA in bf16
+- Expected runtime: **12–18 minutes**
+
+**Commit and push these changes from your Mac** before pulling on the
+pod — keep the pod in "just run code, don't author" mode:
+
+```bash
+# On Mac
+git add runs/sft_v1_trl/train.py
+git commit -m "config: H100 settings (bf16, bs=16, 3 epochs)"
+git push
+
+# On pod
+git pull
+```
+
+---
+
+## 8. Running training under tmux
+
+**Always** use `tmux`. SSH connections drop. Without `tmux`, a
+dropped connection kills the training process and you've burnt N
+minutes of H100 time on nothing.
+
+```bash
+# Inside the SSH session on the pod
+tmux new -s train
+
+# Now you're in a tmux session; start training
+uv run python -m runs.sft_v1_trl.train 2>&1 | tee runs/sft_v1_trl/train.log
+```
+
+The `2>&1 | tee` captures stdout/stderr to a log file too — useful
+for retroactive debugging.
+
+**Detach** from tmux: `Ctrl-b` then `d`. The training keeps running
+even if your SSH disconnects.
+
+**Re-attach** (after reconnecting via SSH):
+
+```bash
+tmux attach -t train
+```
+
+**Watch GPU utilization** in a separate tmux window (`Ctrl-b c`):
+
+```bash
+watch -n 1 nvidia-smi
+```
+
+You want to see ~80–95% utilization during training. If it's
+sitting at 5%, something is wrong (CPU bottleneck — usually the data
+loader; bump `dataloader_num_workers` in SFTConfig).
+
+---
+
+## 9. Pulling the checkpoint back
+
+When training completes, the adapter is at
+`runs/sft_v1_trl/checkpoints/final/` on the pod (~10 MB for our
+LoRA).
+
+From your **Mac**:
+
+```bash
+mkdir -p runs/sft_v1_trl/checkpoints
+scp -P <pod-port> -r \
+  root@<host>:/workspace/learn-you-an-sft/runs/sft_v1_trl/checkpoints/final \
+  runs/sft_v1_trl/checkpoints/
+```
+
+Also pull the training log:
+
+```bash
+scp -P <pod-port> \
+  root@<host>:/workspace/learn-you-an-sft/runs/sft_v1_trl/train.log \
+  runs/sft_v1_trl/
+```
+
+Verify it loaded:
+
+```bash
+ls -la runs/sft_v1_trl/checkpoints/final/
+# adapter_config.json, adapter_model.safetensors, tokenizer files, etc.
+```
+
+You can also sanity-load on the Mac:
+
+```python
+from peft import PeftModel
+from transformers import AutoModelForCausalLM
+
+base = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-0.5B-Instruct")
+model = PeftModel.from_pretrained(base, "runs/sft_v1_trl/checkpoints/final")
+print(f"trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
+```
+
+---
+
+## 10. Terminating the pod (critical)
+
+This is the single most important step.
+
+**A forgotten H100 pod running for 24 hours = $72.** A forgotten pod
+running for a week = $500. People have done this. Don't.
+
+### The discipline
+
+1. The moment training finishes and your checkpoints are scp'd:
+   ```bash
+   # On pod (good housekeeping, not strictly required since terminate kills everything)
+   exit
+   ```
+
+2. Go to the **RunPod web UI** dashboard.
+
+3. Find your pod. Click the trash icon. Confirm.
+
+4. **Refresh the page.** Verify the pod is gone from "Running" and
+   "My pods" shows zero active.
+
+5. Open `runs/COSTS.md` and log this session immediately (§ 11).
+
+### Why "via the web UI" and not "via the CLI"
+
+The RunPod CLI's terminate command has occasionally had bugs where
+it returns success but the pod keeps running. Always confirm via
+the dashboard's running-pods list. The number you want there is
+**zero**.
+
+### Calendar reminders save money
+
+Set a calendar reminder for 1h after pod launch. If the meter is
+still running when it fires and you didn't expect that, something
+is wrong — investigate immediately.
+
+---
+
+## 11. Cost ledger discipline
+
+Maintain `runs/COSTS.md` as a running table. One row per session.
+Logged immediately on termination, before you do anything else.
+
+```markdown
+| Date       | Pod   | Mins | $/hr | $     | Stage         | What you learned |
+|------------|-------|------|------|-------|---------------|------------------|
+| 2026-05-17 | H100  |   18 | 2.69 |  0.81 | Phase A 15K   | Loss 0.42 final; sanity check on-persona |
+| 2026-05-17 | H100  |   22 | 2.69 |  0.99 | Phase B 15K   | Hand-rolled v2 matches v1 within 5% |
+| 2026-05-18 | H100  |   12 | 2.69 |  0.54 | Ablation r=8  | Smaller adapter; persona still transfers |
+```
+
+Cost-tracking discipline forces you to *notice* when something has
+been running longer than expected. The act of writing the
+"What you learned" column is also the moment you actually think
+about what the run showed. Skip it and runs blur together.
+
+---
+
+## 12. Failure modes
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `nvidia-smi` shows no GPU | Wrong template, GPU not attached | Terminate, redeploy with the correct template/GPU |
+| `pip install` hangs forever | Pod's region has bad PyPI connection | Switch region (terminate + redeploy) or use `uv pip install` which has better mirroring |
+| `git clone` fails with auth error | You tried SSH on a fresh pod without forwarding agent | Use HTTPS clone (public repo) or upload key |
+| Training stuck at "0/N steps" for > 2 min | First-step compile (`torch.compile`) — actually normal | Wait 60–90 s; if it's > 3 min, kill and check logs |
+| `OutOfMemoryError` step 0 | `BATCH_SIZE` too high for the model | Drop to 8, enable gradient_checkpointing |
+| `OutOfMemoryError` step 100+ | KV-cache or accumulation growing; bug | Lower `max_length`; check `gradient_accumulation_steps` |
+| GPU sitting at 5% utilization | CPU bottleneck (data loader) | Bump `dataloader_num_workers` to 4–8 |
+| Loss NaN after a few hundred steps | bf16 instability with this LR | Drop LR by 5× or fall back to fp32 |
+| `tmux` session lost on reconnect | Wrong session name on `tmux attach` | Use named sessions; check `tmux ls` |
+| Final checkpoint missing | `save_strategy="no"` somehow set, or pod terminated mid-save | Always `save_strategy="epoch"` + `save_total_limit=1`; never terminate without verifying `runs/.../final/` exists |
+| Sanity-check generation on pod errors out | Same Mac issues — `BatchEncoding` / device mismatch | Same fixes; or skip sanity-check on pod and run it locally after `scp` |
+| Adapter loaded on Mac but generates gibberish | Tokenizer revision mismatch between pod and Mac | Make sure both used the same `transformers` version (the `uv.lock` file pins this) |
+
+### Things that aren't bugs but look like bugs
+
+- **First H100 step takes 60+ seconds** — `torch.compile` tracing.
+- **Loss is high (3.0+) for the first few hundred steps** — model
+  has to "find" the persona; this is normal early-training behaviour.
+- **GPU util drops to 0% during eval steps** — eval doesn't use the
+  forward pass the same way; brief drops are fine.
+
+---
+
+## 13. End-to-end cheat sheet
+
+For a complete Phase A run, the full sequence from "I'm ready to
+launch" to "the pod is terminated and the adapter is on my Mac":
+
+```bash
+# === On Mac, before launching ===
+git status                            # clean working tree
+wc -l data/processed/train.jsonl      # ~15000 lines
+git push                              # make sure pod can pull latest
+
+# Set a calendar reminder for now + 1 hour.
+
+# === Launch pod via RunPod web UI, then SSH in ===
+ssh root@<host> -p <port>
+
+# === On pod ===
+cd /workspace
+git clone https://github.com/arunma/learn-you-an-sft.git
+cd learn-you-an-sft
+curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env
+uv venv && uv pip install -e .
+
+# === Get data onto pod (from Mac, separate terminal) ===
+scp -P <port> data/processed/*.jsonl data/processed/manifest.json \
+  root@<host>:/workspace/learn-you-an-sft/data/processed/
+
+# === Back on pod, start training under tmux ===
+tmux new -s train
+uv run python -m runs.sft_v1_trl.train 2>&1 | tee runs/sft_v1_trl/train.log
+# Ctrl-b d to detach
+
+# === Watch utilization (Ctrl-b c for new tmux window on pod) ===
+watch -n 1 nvidia-smi
+
+# === When done, pull checkpoint back (from Mac) ===
+scp -P <port> -r \
+  root@<host>:/workspace/learn-you-an-sft/runs/sft_v1_trl/checkpoints/final \
+  runs/sft_v1_trl/checkpoints/
+
+# === TERMINATE THE POD VIA WEB UI ===
+# Verify zero running pods on the dashboard.
+
+# === Log cost in runs/COSTS.md ===
+# Update with date, minutes, dollars, stage, what you learned.
+```
+
+---
+
+## Final note
+
+The hardest part of cloud GPU work isn't the training — it's the
+discipline around the meter. Calendar reminders, cost ledger,
+"terminate via web UI" muscle memory, never editing code on the
+pod. Build those habits on the first cheap run and you'll be
+relaxed about every run after.
+
+The training itself is just the script you already have, running on
+a different machine.

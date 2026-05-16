@@ -15,6 +15,11 @@ and fine-tuning it on (prompt, response) pairs synthesised by Gemini
 (prompt, response) pair design, chat templates, loss masking, and
 batching, with runnable code for each lesson.
 
+Running the real training on a cloud H100? See
+[RUNPOD.md](RUNPOD.md) — operations playbook: pod launch, code/data
+transfer, tmux discipline, terminating the pod (the critical step),
+cost ledger, common failure modes.
+
 Full project context, locked decisions, and ops practices: see
 [HANDOFF.md](HANDOFF.md).
 
