@@ -14,5 +14,11 @@ data/processed/
 runs/*/checkpoints/
 runs/*/loss.jsonl
 
+# Merged / quantized model artifacts (regeneratable from HF Hub adapter)
+models/
+
+# Eval reports (large JSONL + summary JSON; regeneratable from judge runs)
+eval/reports/
+
 # Local secrets
 .env
