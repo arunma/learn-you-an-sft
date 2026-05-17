@@ -17,7 +17,7 @@ import torch
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-BASE_ID = "Qwen/Qwen2.5-0.5B-Instruct"
+BASE_ID = "Qwen/Qwen2.5-3B-Instruct"
 ADAPTER_ID = "arunma/monty"
 OUT_DIR = Path(__file__).resolve().parent.parent / "models" / "monty-merged"
 
