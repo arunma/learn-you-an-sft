@@ -360,6 +360,57 @@ You want to see ~80–95% utilization during training. If it's
 sitting at 5%, something is wrong (CPU bottleneck — usually the data
 loader; bump `dataloader_num_workers` in SFTConfig).
 
+### Live TensorBoard via SSH port forwarding (optional)
+
+Training script already writes tfevents to
+`runs/sft_v1_trl/checkpoints/runs/<timestamp>/` (because
+`report_to="tensorboard"` is set in `SFTConfig`). To watch the loss
+curve live in your browser:
+
+**1. On the pod (in a new tmux window — `Ctrl-b c`):**
+
+```bash
+# Wait until training has produced at least one event file
+ls runs/sft_v1_trl/checkpoints/runs/*/   # should show events.out.tfevents.*
+
+# Launch TensorBoard. --bind_all is critical for SSH-tunneled access.
+uv pip install tensorboard   # if not already in the venv
+tensorboard --logdir runs/sft_v1_trl/checkpoints/runs --port 6006 --bind_all
+```
+
+Leave that running. It binds to `0.0.0.0:6006` inside the pod.
+
+**2. On your Mac (in a separate terminal, leave it open):**
+
+```bash
+# SSH local-forward: localhost:6006 (Mac) <-> localhost:6006 (pod)
+ssh -L 6006:localhost:6006 -p <pod-port> root@<pod-host> -N
+```
+
+- `-L 6006:localhost:6006` forwards your Mac's port 6006 to the pod's port 6006.
+- `-N` means "don't run a remote command, just keep the tunnel open."
+- Leave this terminal open the whole time you want TB access; closing it tears down the tunnel.
+
+**3. Open `http://localhost:6006` in your Mac browser.**
+
+You'll see Monty's training loss descend in real time, plus
+`learning_rate`, `grad_norm`, `mean_token_accuracy`, `entropy`. The
+plots refresh every ~30 s.
+
+### Alternative: post-hoc TensorBoard (simpler)
+
+If you don't need live monitoring, skip the SSH tunnel. After the
+run, `scp` the events files back and run TB on Mac:
+
+```bash
+# On Mac, after scp'ing the checkpoint back:
+tensorboard --logdir runs/sft_v1_trl/checkpoints/runs
+# Open http://localhost:6006
+```
+
+For a 15-25 min run, post-hoc is plenty. Live is for longer runs
+where you want to kill early if loss diverges.
+
 ---
 
 ## 9. Pulling the checkpoint back
@@ -412,7 +463,45 @@ This is the single most important step.
 **A forgotten H100 pod running for 24 hours = $72.** A forgotten pod
 running for a week = $500. People have done this. Don't.
 
-### The discipline
+### Recommended: auto-terminate from the training script
+
+`runs/sft_v1_trl/train.py` supports two opt-in env vars that
+turn the pod into a self-cleaning oven. **Use them.**
+
+| Env var | Behaviour |
+|---|---|
+| `HF_PUSH_REPO=arunma/learn-you-an-sft-monty-v1` | After training, push the adapter + tokenizer to a private HF Hub repo. Lets you recover the model without scp'ing — adapter survives pod death. Requires `HF_TOKEN` env var. |
+| `TERMINATE_POD_AFTER_TRAIN=1` | After training (and HF push if requested), invoke `runpodctl remove pod $RUNPOD_POD_ID`. Permanently kills the pod (compute + storage gone, billing stops). 30-second countdown gives you time to Ctrl+C if you're watching. |
+
+**Full safety-net launch command** (on the pod, inside tmux):
+
+```bash
+# Set the safety env vars. Adjust HF_PUSH_REPO to your namespace.
+export HF_TOKEN=hf_...                                   # from huggingface.co/settings/tokens
+export HF_PUSH_REPO=arunma/learn-you-an-sft-monty-v1
+export TERMINATE_POD_AFTER_TRAIN=1
+
+# Train. Pod self-destructs ~30s after the script's final print.
+uv run python -m runs.sft_v1_trl.train 2>&1 | tee runs/sft_v1_trl/train.log
+```
+
+When `trainer.train()` returns, the script:
+1. Saves the adapter locally to `runs/sft_v1_trl/checkpoints/final/`.
+2. Runs the sanity-check generation.
+3. **Pushes** adapter + tokenizer to `huggingface.co/<HF_PUSH_REPO>` (private).
+4. Prints `!! AUTO-TERMINATING POD <id> IN 30 SECONDS !!` and counts down.
+5. Calls `runpodctl remove pod <id>`. Pod gone, billing stops.
+
+If the HF push fails, the script **does not terminate the pod** —
+fail-safe so you can investigate / scp manually. If you want a
+truly belt-and-braces setup, also `scp` the checkpoint to your Mac
+*before* the auto-terminate fires (use `tee` to see when training
+finishes; you have 30 seconds + the HF push window).
+
+The killer feature: **even if you fall asleep at your laptop, the
+pod terminates itself**. Same $50 mistake costs $0 with this setup.
+
+### Manual fallback: the discipline
 
 1. The moment training finishes and your checkpoints are scp'd:
    ```bash

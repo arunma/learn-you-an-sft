@@ -71,6 +71,9 @@ On RunPod H100 (bf16): seconds, but launch the same script.
 """
 from __future__ import annotations
 
+import os
+import subprocess
+import time
 from pathlib import Path
 
 import torch
@@ -267,10 +270,68 @@ def main() -> None:
     )
     print(f"Prompt:   {test_prompt!r}")
     print(f"Response: {response!r}")
-    print(
-        "\n(Overfit warning: with 24 examples the response will likely "
-        "mirror the seed pair almost verbatim. That's expected.)"
-    )
+    # ---- Post-training safety net (cost protection) ----
+    # Two env vars, both opt-in:
+    #
+    #   HF_PUSH_REPO=<namespace>/<repo-name>
+    #     Push the adapter + tokenizer to a private HF Hub repo. Lets
+    #     you recover the model without scp'ing from the pod. Requires
+    #     HF_TOKEN env var set (huggingface-cli login or via .env).
+    #
+    #   TERMINATE_POD_AFTER_TRAIN=1
+    #     After training (and after HF push if requested), terminate
+    #     this RunPod pod via runpodctl. Prevents the "forgot to kill
+    #     the pod" $50 lesson. 30-second countdown before terminate;
+    #     Ctrl+C to abort.
+    hub_repo = os.environ.get("HF_PUSH_REPO")
+    if hub_repo:
+        print(f"\nPushing adapter + tokenizer to HF Hub: {hub_repo}")
+        try:
+            trainer.model.push_to_hub(hub_repo, private=True)
+            tokenizer.push_to_hub(hub_repo, private=True)
+            print(f"  OK — https://huggingface.co/{hub_repo}")
+        except Exception as e:
+            print(f"  FAILED: {type(e).__name__}: {e}")
+            print("  Skipping pod auto-terminate so you can scp manually.")
+            return
+
+    if os.environ.get("TERMINATE_POD_AFTER_TRAIN") == "1":
+        pod_id = os.environ.get("RUNPOD_POD_ID")
+        if not pod_id:
+            print(
+                "\nTERMINATE_POD_AFTER_TRAIN=1 but RUNPOD_POD_ID is not set. "
+                "Are you running on a RunPod pod? Skipping auto-terminate."
+            )
+            return
+
+        print(f"\n!! AUTO-TERMINATING POD {pod_id} IN 30 SECONDS !!")
+        print(
+            "   Ctrl+C to abort — pod stays alive and you'll need to "
+            "terminate it manually via the RunPod dashboard."
+        )
+        try:
+            for sec in range(30, 0, -1):
+                print(f"   ...{sec}s ", end="\r", flush=True)
+                time.sleep(1)
+            print()
+        except KeyboardInterrupt:
+            print("\n  Aborted. Pod stays alive — TERMINATE IT MANUALLY.")
+            return
+
+        result = subprocess.run(
+            ["runpodctl", "remove", "pod", pod_id],
+            capture_output=True, text=True,
+        )
+        print(f"  runpodctl exit code: {result.returncode}")
+        if result.stdout:
+            print(f"  stdout: {result.stdout.strip()}")
+        if result.stderr:
+            print(f"  stderr: {result.stderr.strip()}")
+        if result.returncode != 0:
+            print(
+                "  !! runpodctl FAILED. CHECK THE RUNPOD DASHBOARD AND "
+                "TERMINATE THE POD MANUALLY. !!"
+            )
 
 
 if __name__ == "__main__":
