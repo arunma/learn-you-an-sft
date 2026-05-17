@@ -22,7 +22,7 @@ from eval.rubric import (
 
 DEFAULT_JUDGE_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_MAX_TOKENS = 400
-DEFAULT_CONCURRENCY = 5
+DEFAULT_CONCURRENCY = 10
 DEFAULT_MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2.0  # seconds; exponential backoff
 
