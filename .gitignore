@@ -20,5 +20,8 @@ models/
 # Eval reports (large JSONL + summary JSON; regeneratable from judge runs)
 eval/reports/
 
+# RunPod pod-id state file (written by scripts/pod_up, read by scripts/pod_down)
+.runpod_pod_id
+
 # Local secrets
 .env

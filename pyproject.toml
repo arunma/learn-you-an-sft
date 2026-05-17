@@ -17,7 +17,10 @@ dependencies = [
   # Stage 2.5 — Claude Haiku judge
   "anthropic>=0.30",
   # Stage 3a / 4 — SFT training stack
-  "torch>=2.1",
+  # Pinned to 2.5.x because 2.6.0+cu124 requires NCCL 2.23+ symbols
+  # (ncclCommWindowDeregister) not always available in RunPod's PyTorch image.
+  # See [tool.uv.sources] below for the Linux-only cu124 wheel routing.
+  "torch>=2.5.1,<2.6",
   "transformers>=4.44",  # Qwen2.5 chat template support
   "tokenizers>=0.15",
   "datasets>=2.14",
@@ -35,8 +38,22 @@ dependencies = [
   "pytest",
   "fasttext-numpy2>=0.10.4",
   "tensorboard>=2.20.0",
+  "runpod>=1.9.0",
 ]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["data*", "synthesis*", "runs*"]
+
+# Route torch through the cu124 wheel index on Linux only. macOS gets the
+# default PyPI wheel (CPU/MPS build). This makes `uv sync` install the
+# CUDA-compatible torch directly on RunPod pods — no manual reinstall needed.
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu124", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true

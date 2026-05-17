@@ -10,6 +10,79 @@ launching anything.
 
 ---
 
+## Quick start — automated scripts (recommended)
+
+For most runs, skip the manual ceremony and use the wrapper scripts under `scripts/`. They create the pod via the RunPod API, wait for SSH, clone the repo, `uv sync`, and `scp` your data files in one shot.
+
+### One-time setup
+
+```bash
+# 1. Install the SDK
+uv add runpod
+
+# 2. Add your RunPod API key to .env (alongside HF_TOKEN, ANTHROPIC_API_KEY)
+#    Get it from: https://www.runpod.io/console/user/settings → API Keys
+echo "RUNPOD_API_KEY=rpa_..." >> .env
+```
+
+### Daily commands
+
+```bash
+# Create + provision a pod (defaults: NVIDIA RTX A6000, RunPod PyTorch 2.4 image)
+uv run python -m scripts.pod_up
+
+# Pick a different GPU
+uv run python -m scripts.pod_up --gpu "NVIDIA GeForce RTX 4090"
+uv run python -m scripts.pod_up --gpu "NVIDIA RTX PRO 6000"
+
+# Skip data upload (just want a fresh pod for code work)
+uv run python -m scripts.pod_up --skip-data
+
+# Skip clone + uv sync on the pod (do it yourself)
+uv run python -m scripts.pod_up --skip-setup
+
+# Terminate — uses the pod id stashed in .runpod_pod_id
+uv run python -m scripts.pod_down
+
+# Terminate a specific pod
+uv run python -m scripts.pod_down c7e086687f6d
+```
+
+### What `pod_up` does, in order
+
+1. Loads `.env` for `RUNPOD_API_KEY` plus forwarded vars (`HF_TOKEN`, `HF_PUSH_REPO`, `ANTHROPIC_API_KEY`)
+2. Calls `runpod.create_pod(...)` with the image / GPU / disk / ports baked in
+3. Saves the pod id to `.runpod_pod_id` (gitignored)
+4. Polls until the pod is `RUNNING` with SSH port assigned (up to 5 min)
+5. Polls until the SSH service accepts connections (up to 3 min)
+6. SSHes in and runs: `git clone || git pull`, `mkdir -p data/processed`, `uv sync`
+7. `scp`s `data/processed/train.jsonl`, `val.jsonl`, `manifest.json` (skips files missing locally)
+8. Prints the SSH command, the TensorBoard tunnel command, and the destroy command
+
+### Why the defaults
+
+| Default | Why |
+|---|---|
+| `NVIDIA RTX A6000` | 48 GB VRAM at $0.49/hr — best value for 3B-class work. Override with `--gpu` if low capacity. |
+| `runpod/pytorch:2.4.0-py3.11-cuda12.4.1-...` | RunPod's official template with matched driver + toolkit. Avoids the NVML / CUDA-driver-too-old errors. |
+| 50 GB container disk | Enough for the repo + Qwen2.5-3B weights (~6 GB) + a few LoRA checkpoints (~100 MB × 3) + slack. |
+| Pod stays alive after script exits | No auto-terminate. You destroy explicitly with `pod_down`. |
+
+### When the scripts can't help
+
+- **You want to inspect a pod that already exists** → use the RunPod dashboard or `runpodctl get pods`.
+- **The `runpod` SDK rejects `gpu_type_id`** → list valid ids:
+  ```bash
+  uv run python -c "import runpod, os, json; runpod.api_key=os.environ['RUNPOD_API_KEY']; print(json.dumps(runpod.get_gpus(), indent=2))"
+  ```
+- **The Python SDK call fails entirely** → drop to the CLI:
+  ```bash
+  runpodctl remove pod <pod_id>
+  ```
+- **You need to do something the scripts don't cover** (debugging, custom image, network volumes) → fall back to the manual steps below.
+
+---
+
 ## Table of contents
 
 1. [When to use RunPod (vs Mac local)](#1-when-to-use-runpod-vs-mac-local)
