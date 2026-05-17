@@ -1,6 +1,7 @@
 """Generate Monty responses with the fine-tuned adapter (or just the base, for baselines)."""
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -48,11 +49,16 @@ def generate_responses(
     top_p: float = 0.9,
     max_new_tokens: int = 256,
     progress: bool = True,
+    progress_every: int = 10,
 ) -> list[Generation]:
     """Run generation one prompt at a time. Returns Generations in input order."""
     out: list[Generation] = []
     total = len(prompts_and_golds)
     device = next(model.parameters()).device
+    start = time.monotonic()
+
+    if progress:
+        print(f"  Generating {total} responses (T={temperature}, top_p={top_p})...", flush=True)
 
     for i, (prompt, gold) in enumerate(prompts_and_golds):
         messages = [
@@ -84,7 +90,16 @@ def generate_responses(
         response = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
         out.append(Generation(prompt=prompt, gold=gold, response=response))
 
-        if progress and ((i + 1) % 25 == 0 or (i + 1) == total):
-            print(f"  generated {i + 1}/{total}", flush=True)
+        done = i + 1
+        if progress and (done % progress_every == 0 or done == total):
+            elapsed = time.monotonic() - start
+            rate = done / elapsed if elapsed > 0 else 0.0
+            remaining = (total - done) / rate if rate > 0 else 0.0
+            print(
+                f"  generated {done}/{total}  "
+                f"({elapsed:.0f}s elapsed, {rate:.2f} prompts/s, "
+                f"~{remaining:.0f}s remaining)",
+                flush=True,
+            )
 
     return out

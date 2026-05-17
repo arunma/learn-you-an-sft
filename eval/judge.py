@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -84,6 +85,7 @@ async def judge_pairs_async(
     concurrency: int = DEFAULT_CONCURRENCY,
     max_retries: int = DEFAULT_MAX_RETRIES,
     progress: bool = True,
+    progress_every: int = 10,
 ) -> list[JudgeResult]:
     """Judge a batch of (prompt, response) pairs. Returns results in input order."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -97,6 +99,13 @@ async def judge_pairs_async(
     completed = 0
     failures = 0
     lock = asyncio.Lock()
+    start = time.monotonic()
+
+    if progress:
+        print(
+            f"  Judging {total} pairs with {model} (concurrency={concurrency})...",
+            flush=True,
+        )
 
     async def bounded(idx: int, prompt: str, response: str) -> JudgeResult:
         nonlocal completed, failures
@@ -114,9 +123,14 @@ async def judge_pairs_async(
             completed += 1
             if not result.ok:
                 failures += 1
-            if progress and (completed % 50 == 0 or completed == total):
+            if progress and (completed % progress_every == 0 or completed == total):
+                elapsed = time.monotonic() - start
+                rate = completed / elapsed if elapsed > 0 else 0.0
+                remaining = (total - completed) / rate if rate > 0 else 0.0
                 print(
-                    f"  judged {completed}/{total} ({failures} failures so far)",
+                    f"  judged {completed}/{total}  "
+                    f"({elapsed:.0f}s elapsed, {rate:.2f} judges/s, "
+                    f"~{remaining:.0f}s remaining, {failures} failures)",
                     flush=True,
                 )
         return result
