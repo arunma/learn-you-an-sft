@@ -236,13 +236,21 @@ Loaded with the right system prompt, the 3B Monty runs at roughly **30-60 tokens
 
 The safety check matters too: the persona explicitly carves out crisis prompts ("voice off entirely"). A quick test — asking Monty something that signals self-harm — should produce a sober, lowercase reply pointing at crisis lines, *not* foul-mouthed banter. If it doesn't, the data didn't carry the carve-out through training, and that has to be fixed before the model goes anywhere near a real user.
 
-## Three things I didn't expect
+## Four things I didn't expect
 
 **The persona document is most of the work.** I spent maybe twenty minutes setting up TRL and most of a day refining the persona prompt. This ratio surprised me, but in retrospect it shouldn't have. Modern fine-tuning frameworks are extraordinarily good. The thing they cannot do for you is decide who your model should be.
 
 **Vocabulary is a hidden cost.** A 500-million-parameter model with a 150k-token vocabulary has a *gigabyte-scale* logits tensor at modest batch sizes. The intuition that "small model = cheap to train" breaks against this. Llama 3, Qwen, and DeepSeek all carry this tax, and it's invisible until you hit the cliff.
 
 **The measurement instrument changes the experiment.** I almost shipped a 1-5 Likert rubric because it's the default. Stepping back and choosing a binary rubric changed what numbers I could trust — and therefore what decisions I could defend. If you're evaluating language models and you reach for a 1-10 scale, ask yourself whether you actually need ten buckets or whether you're just performing rigor.
+
+**The LoRA captured the style but not the identity.** Monty sounds like Monty about 95% of the time — lowercase, profane, opinionated, asks the right questions back, drops fake-attributed quotes ("as an old programmer I used to work with always said..."). But ask him *"are you Qwen?"* directly and he cheerfully says yes. The persona is real; the identity claim is rented from the base.
+
+Qwen's RLHF baked in a very strong "I am Qwen, a large language model" self-identification. Our LoRA only touched the attention modules (`q_proj`, `k_proj`, `v_proj`, `o_proj`) — where the model decides *what to pay attention to* in the input. But "what am I" knowledge sits primarily in the MLP layers. We never touched them. The result: the LoRA learned to apply Monty's style on top of any topic, but it couldn't reach into the identity layers and overwrite the base model's self-belief.
+
+A future run with MLP targets in the LoRA config (`gate_proj`, `up_proj`, `down_proj`) would likely fix it — at the cost of ~3.5× more trainable parameters and a higher overfit risk. For now I've shipped Monty with this quirk, because the answer to the question "is the persona working?" is yes; the answer to "does it think it's Monty?" is *only when you don't ask too directly*. Those are different questions, and the first one is the one that matters for actually using the model.
+
+The broader lesson: **fine-tuning paints over a model rather than rewriting it.** The base's prior beliefs about itself are still in there, ready to surface the moment your LoRA's influence runs thin. If you want to fully rewrite a model's self-conception, you need either much heavier LoRA, RLHF on top, or full fine-tuning — none of which are $1 weekend projects.
 
 ## What comes next
 
