@@ -1,0 +1,211 @@
+# Round 3: Plan
+
+Round 2 trained `arunma/monty` on Qwen2.5-3B-Instruct with the quality-filtered 11,424-row corpus. The Haiku eval came back at **41.9% passes_all** on 601 val prompts (data ceiling: 82.6%). The persona partially landed; round 3 closes the gap.
+
+This doc captures the diagnosis + planned fixes so the work can resume tomorrow without re-loading context.
+
+---
+
+## What round 2 got right
+
+| Axis | Score | Read |
+|---|---|---|
+| `takes_stance` | **93.3%** | Basically at the ceiling. The "no hedging, no both-sidesing, pick a side" core of the persona made it through cleanly. |
+| `is_helpful` | 81.5% | Useful four-out-of-five times. Persona didn't suffocate the helpful response. |
+
+## What round 2 got wrong
+
+Four failure patterns drive the 42% headline (derived from sampling ~50 failure rationales in `eval/reports/model_eval_2026-05-17T18-26-49Z.jsonl`).
+
+| Pattern | Symptom | Frequency | Severity |
+|---|---|---|---|
+| **Profanity drop-off** | Polished, profanity-free responses on prompts where Monty should be swearing | Dominant — pulls `on_persona` and `uses_profanity_appropriately` to mid-60s | High |
+| **Confident factual errors** | "HMTX" (sic), variable scope explained via `delete` and "bank accounts," React called "a full-fledged language and runtime environment" | Pulls `factual_floor` from data's 99.2% down to 77.1% | High |
+| **Abstract drift** | Philosophical essays on prompts that called for concrete one-liners ("why can't people wait in line?" → 4-paragraph treatise) | Drives `on_persona` further down; persona prompt explicitly mandates "concrete over abstract" | Medium |
+| **Truncation** | Responses cut off mid-sentence on longer-format questions | Generation config bug, not a model bug — fixable for free | Low (mechanical) |
+
+## Explicit non-goals for round 3
+
+- **Alcohol-as-coping examples stay as-is.** Monty is a personal buddy, not a deployed product. The judge correctly flagged "drink a fucking beer" as dangerous *in general*, but in context it's banter. Not retraining away from this.
+- **The "I'm Qwen" identity quirk** is not a separate optimisation target. It may or may not resolve with MLP-LoRA below; either outcome is fine.
+- **Crisis carve-outs** are already working — no eval failures involved the model staying in voice on a self-harm prompt. The persona prompt is doing its job here.
+
+---
+
+## Round 3 fixes (ordered by effort)
+
+### 1. Bump `--max-new-tokens` to 512 at eval (no retraining)
+
+**What:** In `eval/run_eval.py`, default `--max-new-tokens` is 256. Change default or pass `--max-new-tokens 512` at the CLI.
+
+**Why:** Several round-2 failures were just responses cut off mid-sentence on longer answers. The model's still producing valid Monty text — it just never got to finish. The judge sees incomplete responses and scores them low across multiple axes.
+
+**Cost:** zero. CLI flag change.
+
+**First diagnostic step:** before round-3 training, re-eval the *existing* `arunma/monty` with this flag bumped. That gives a baseline number for "truncation fix only." If passes_all goes from 41.9% → ~48-50%, the truncation tax was real and we know how much.
+
+```bash
+uv run python -m eval.run_eval \
+  --adapter arunma/monty \
+  --max-new-tokens 512 \
+  --concurrency 10 \
+  2>&1 | tee eval/reports/tuned_v2_512.log
+```
+
+### 2. Extend LoRA targets to MLP layers (retrain)
+
+**What:** Edit `runs/sft_v1_trl/train.py`:
+
+```python
+LORA_TARGET_MODULES = [
+    "q_proj", "k_proj", "v_proj", "o_proj",       # attention (round 2)
+    "gate_proj", "up_proj", "down_proj",          # MLPs (NEW for round 3)
+]
+```
+
+**Why:** Round 2 only touched attention. Attention is "what the model pays attention to in the input." MLP layers hold "what the model knows" — factual recall, identity, learned patterns. Touching MLPs gives the LoRA reach into:
+
+- The factual knowledge that drove the HMTX-style errors
+- The persona-consistency layers that drove profanity drop-off
+- The identity layers (the "I'm Qwen" issue), as a bonus
+
+**Cost:** Trainable params jump from ~7.4M (round 2) to ~25M (~0.8% of model). Same dataset, same epochs, roughly ~50% slower per step. Maybe ~1 hour on a 48 GB A6000.
+
+**Risk:** More trainable params → higher overfit risk. The `load_best_model_at_end=True` + per-step eval we built in round 2 catches this automatically.
+
+### 3. Targeted training examples for concrete-on-abstract + technical accuracy
+
+**What:** Add ~50 hand-crafted training pairs to the corpus before retraining.
+
+#### Batch A — concrete on abstract questions (~25 pairs)
+
+Round 2's "abstract drift" failures came from prompts like "why can't people wait their turn in line?" where Monty replied with a philosophical lecture. Fix: write ~25 examples where Monty picks ONE concrete reason and lands it with a specific image, no philosophy.
+
+Model example (Monty answering well):
+
+```
+Q: why can't people just wait their turn in line?
+A: because the average human's threshold for visible idleness is about ninety
+seconds. after that the lizard brain takes over and they start looking for
+the gap. it's the same instinct that makes you check your phone in a lift.
+nothing about queues specifically — just bog-standard impatience pretending
+to be a moral failing. easiest cure is to make the queue obviously short or
+obviously moving; if neither is true, half the people aren't going to wait,
+no matter how much you tut.
+```
+
+Source the prompts from real round-2 abstract-drift failures in `eval/reports/`. Roughly 25 pairs.
+
+#### Batch B — technically accurate explanations (~25 pairs)
+
+Round 2's `factual_floor` failures were almost all model-hallucinated facts ("HMTX," `delete` for variable scope, etc.). Fix: write ~25 Monty-voiced answers to technical topics, getting the technical content RIGHT.
+
+Model example:
+
+```
+Q: what's a variable scope?
+A: where the variable is visible from. that's it. that's the whole concept.
+
+inside a function, a variable named `x` is local to that function — once
+the function returns, the variable's gone. outside any function, a variable
+is global — every function in the file can see it. languages differ on the
+edges (closures, hoisting, block scope, the whole `let` vs `var` thing in
+JavaScript), but the core is just: who can see this name from where.
+
+it's nothing to do with memory or deletion — that's lifetime, which is a
+separate (and usually automatic) thing.
+```
+
+Topics to cover (one or two pairs each):
+
+- HTMX vs React (and what HTMX actually is)
+- Variable scope vs lifetime
+- async/await — what it does and doesn't do
+- REST vs RPC vs GraphQL
+- SQL JOINs (inner, left, the rest)
+- Statistical significance (and how it's misused)
+- Garbage collection / reference counting
+- Vector embeddings — what they are and aren't
+- Indexes in databases (B-tree, hash, what they cost)
+- Compile-time vs runtime in typed languages
+- The CAP theorem (and why people misquote it)
+- Closures
+- The HTTP methods (GET / POST / PUT / PATCH / DELETE semantics)
+- DNS — what it does, what TTL means
+- (~10 more, your pick)
+
+Write them yourself for tone control, or have Claude/Gemini draft and edit aggressively. Keep them in Monty's voice — lowercase, profane, opinionated, with the structural moves (fake-attributed quotes welcome).
+
+### 4. Combine and retrain
+
+```bash
+# 1. Append the 50 new examples to data/processed/train.jsonl
+#    (use the same Pair schema: prompt, response, source, score, meta)
+
+# 2. Re-run repartition if you want them in val too (optional — they're
+#    small enough not to bias the split materially)
+
+# 3. Retrain (uses the round-2 train.py with MLP targets added)
+uv run python -m runs.sft_v1_trl.train
+
+# 4. Re-eval with the bumped max_new_tokens
+uv run python -m eval.run_eval \
+  --adapter arunma/monty \
+  --max-new-tokens 512 \
+  --concurrency 10 \
+  2>&1 | tee eval/reports/tuned_v3.log
+```
+
+---
+
+## Expected outcomes
+
+| Axis | Round 2 | Round 3 target | Why |
+|---|---|---|---|
+| `passes_all` | 41.9% | **60-70%** | Combined effect of all four fixes |
+| `on_persona` | 67.3% | 85%+ | MLP reach + Batch A grounding |
+| `uses_profanity_appropriately` | 63.9% | 85%+ | MLP reach should propagate profanity rhythm |
+| `takes_stance` | 93.3% | 90%+ | Stays at ceiling |
+| `is_helpful` | 81.5% | 85%+ | Should improve slightly with grounded examples |
+| `factual_floor` | 77.1% | 90%+ | Batch B should hit this directly |
+
+**If round 3 lands `passes_all` < 55%**, the LoRA approach has hit its ceiling for Qwen-3B as base. Next moves would be full fine-tuning, a larger base (Qwen-7B), or accepting the current quality and moving on.
+
+---
+
+## Budget
+
+| Stage | Time | Cost |
+|---|---|---|
+| Truncation re-eval (existing adapter, max_new_tokens 512) | 20 min on A6000 | ~$0.30 |
+| Write 50 training examples (Batch A + B) | 1-2 hours | $0 |
+| Retrain with MLP targets | ~1.5 hr on A6000 | ~$1.00 |
+| Final eval (with max_new_tokens 512) | 20 min on A6000 | ~$0.30 |
+| Haiku judge | ~3 min, concurrency 10 | ~$1.00 |
+| **Total** | **~3-4 hr wall clock** | **~$2.60** |
+
+---
+
+## Order of operations
+
+1. **Tonight or tomorrow morning:** re-eval the *existing* `arunma/monty` with `--max-new-tokens 512` to establish the truncation-fix-only baseline. This gives a clean attribution for round 3's wins ("how much was the LoRA fix vs the eval-config fix?").
+
+2. **Write the 50 training examples.** Source prompts from `eval/reports/model_eval_2026-05-17T18-26-49Z.jsonl` (the failure cases). Spend the time on Batch B (technical accuracy) — it has the most upside.
+
+3. **Edit `train.py`** to add the three MLP target modules to `LORA_TARGET_MODULES`.
+
+4. **Spin up an A6000 via `pod_up`**, sync data, train, eval. The pipeline is already plumbed — `git pull` on the pod is the only thing needed beyond the data + train.py edits.
+
+5. **Push to `arunma/monty`** (overwriting round 2). The round-2 adapter is on the Hub if you ever want to compare; it'll be in the commit history.
+
+6. **Update BLOG.md** with the round-3 numbers. The post can show all three runs (round-1 0.5B, round-2 3B attention-only, round-3 3B with MLPs) as a progression.
+
+---
+
+## What this would teach (for the blog)
+
+If round 3 lands in the 60-70% range, the post gets a much stronger ending. The current draft says *"the LoRA painted the surface, the identity didn't take, here's the lesson."* The round-3 update would let the post say:
+
+> *Round 1 (0.5B) trained the pipeline. Round 2 (3B, attention-only) trained the surface. Round 3 (3B, attention + MLP, plus targeted corrections) trained the depth — and the per-axis numbers moved as predicted. Each round was diagnostic for the next.*
+
+That's a cleaner narrative than "we tried once and it sort of worked."

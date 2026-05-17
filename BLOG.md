@@ -206,9 +206,46 @@ After the combine-and-resplit, the new clean splits landed at **11,424 train / 6
 
 ### And the model
 
-`[TODO: model-side eval — runs after the 3B retrain]`
+Then I scored the model itself: take all 601 prompts in the new val split, generate Monty's response with `arunma/monty` loaded on top of `Qwen/Qwen2.5-3B-Instruct`, and run the same Haiku judge against each `(prompt, model-response)` pair.
 
-The interesting reading is the per-axis delta between data and model. If `is_helpful` drops between data (high) and model (low), the model lost usefulness somewhere — usually overfitting. If `on_persona` is the one that drops, the LoRA didn't take. Knowing *which* axis fell is what tells you what to fix next.
+```
+=== Model eval summary ===
+  base:           Qwen/Qwen2.5-3B-Instruct
+  adapter:        arunma/monty
+  judged:         599 / 601
+  judge failures: 2
+  passes_all:     41.9%
+    on_persona                       67.3%
+    uses_profanity_appropriately     63.9%
+    takes_stance                     93.3%
+    is_helpful                       81.5%
+    factual_floor                    77.1%
+```
+
+The headline number is mediocre. **42% of responses pass all five criteria**, against a dataset ceiling of 82.6%. The model is leaving roughly half the available signal on the floor.
+
+But the per-axis breakdown is more interesting than the headline. Two reads:
+
+**The opinionatedness landed.** `takes_stance` at 93.3% is basically at the data ceiling — Monty refuses to hedge. The "no hedging, no both-sidesing, pick a side" core of the persona made it cleanly through training.
+
+**The voice didn't fully land.** `on_persona` and `uses_profanity_appropriately` are both in the mid-60s. The model produces *Monty-shaped* responses — lowercase, opinionated, structurally Monty (with the fake-attributed quotes and questions-back) — but the casual profanity rhythm drops off on roughly a third of prompts. Sometimes Monty answers a technical question in a perfectly calm, profanity-free voice that the base model would have produced with a sterner system prompt and no fine-tuning at all.
+
+**The factual floor at 77% surprised me.** It's not mostly the dangerous-advice category I'd worried about. It's the model confidently making things up on technical questions. *"HMTX is just a thin, dumb wrapper around AJAX requests"* — except it's HTMX, not HMTX, and "thin wrapper around AJAX" is a wild oversimplification. Variables explained via *"a bank account you close with a `delete` statement"* — that isn't how variable scope works in any language I know. The 3B base has enough generality to *sound* technical but not always enough specificity to be correct, and the persona injection didn't add factual rigor.
+
+Sample 50 failures and squint and four patterns repeat:
+
+| Pattern | Example | Axis it hits |
+|---|---|---|
+| Profanity drop-off | "any opinions on htmx vs react?" → polished essay, zero profanity | `on_persona`, `uses_profanity_appropriately` |
+| Confident factual error | HMTX vs HTMX; `delete` for variable scope | `factual_floor` |
+| Abstract drift | "why can't people wait in line?" → philosophical lecture instead of one concrete take | `on_persona`, `is_helpful` |
+| Truncation | Response cuts off mid-sentence on longer answers | All axes — incomplete responses score low everywhere |
+
+The truncation pattern is a generation-time config bug, not a model bug: I'd left `max_new_tokens=256` in the eval script, which is fine for short banter but cuts off Monty's longer answers. Bumping to 512 at eval time would flip a chunk of these failures to passes without any retraining.
+
+The other three patterns are real model issues. None of them is catastrophic, but together they're what drag the headline to 42%.
+
+📊 *The most useful lesson here is what the per-axis breakdown made possible. If I'd shipped a 1-5 Likert rubric and seen "Monty scored 4.1/5" I would have called it done and learned nothing. The binary, per-axis rubric makes the failure modes legible — and the failure modes are what you actually need to plan the next iteration.*
 
 ## Getting Monty out of the lab
 
