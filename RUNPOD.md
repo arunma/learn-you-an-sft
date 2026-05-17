@@ -79,16 +79,51 @@ finish prep, come back.
 
 ### Pick the GPU
 
-| Tier | GPU | Approx $/hr (community) | When to use |
-|---|---|---|---|
-| Cheap | RTX 4090 24 GB | $0.40–$0.60 | Quick LoRA on small models (≤ 1B) |
-| Standard | A100 40 GB | $0.99–$1.49 | Mid-size models (1–7B) |
-| **What we use** | **H100 80 GB SXM5** | **$2.69–$2.99** | **Fast Phase A / Phase B on Qwen2.5-0.5B (overkill but cheap per minute)** |
+**Memory math for our use case** (Qwen2.5-0.5B + LoRA, batch 16,
+seq 1024, bf16, gradient_checkpointing):
 
-For our 0.5B model, even an RTX 4090 is enough — H100 is overkill.
-But the per-minute cost difference is small ($0.01/min vs $0.05/min)
-and the H100's bandwidth makes runs predictable. Pick what's
-available.
+| Component | VRAM |
+|---|---:|
+| Base model weights (0.5B, bf16) | ~1 GB |
+| LoRA adapter (rank 16, attention-only) | ~10 MB |
+| Optimizer state (AdamW on LoRA only) | ~40 MB |
+| Activations (with gradient checkpointing) | ~3–6 GB |
+| **Total** | **~6–10 GB** |
+
+**Anything ≥ 16 GB VRAM works.** ≥ 24 GB is comfortable. Don't pay
+for H100 when you don't need to.
+
+**Picker priority (in order of preference for this project):**
+
+| GPU | $/hr | VRAM | Est. run time | Est. our cost | Notes |
+|---|---:|---:|---|---:|---|
+| **RTX 5090** | **$0.99** | **32 GB** | **~25 min** | **~$0.40** | Best pick when H100 is out — Medium availability, newest, fast bf16 |
+| RTX 4090 | $0.69 | 24 GB | ~25-30 min | ~$0.30 | Cheap, well-tested for ML |
+| A100 SXM | $1.49 | 80 GB | ~15-18 min | ~$0.40 | Data-center-grade; classic ML choice |
+| RTX 6000 Ada | $0.77 | 48 GB | ~20-25 min | ~$0.30 | Mid-range data-center |
+| H100 NVL / SXM | $2.99–$3.07 | 80–94 GB | ~13-15 min | ~$0.70 | Fastest; often out of capacity |
+
+**What to avoid for this project:**
+
+- **L4** (24 GB, $0.39/hr) — cheap but lower memory bandwidth; ~1.5×
+  slower than 4090 for training.
+- **B-series, H200** — way overkill; only available at top tier; often
+  out of capacity anyway.
+- **Anything < 16 GB** — tight margin; not worth the savings.
+
+### H100 out of capacity? (the common case)
+
+H100 is in heavy demand and frequently shows "Out of capacity" on
+community-cloud. **Don't wait for it.** Pick **RTX 5090** if
+available (Medium > Low for likelihood of actual launch), otherwise
+fall back through the picker order above. Everything in this
+playbook works identically on any of those GPUs — same SSH flow,
+same `train.py`, same commands. Only the line you write in
+`runs/COSTS.md` changes (`RTX 5090` instead of `H100 80G`).
+
+For the original H100 cost estimates in this doc (e.g., `$2.69/hr`
+in § 11), substitute whatever rate you actually launched at. Real
+spend will be lower with the alternatives.
 
 ### Template
 
