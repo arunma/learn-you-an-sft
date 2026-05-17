@@ -72,8 +72,6 @@ On RunPod H100 (bf16): seconds, but launch the same script.
 from __future__ import annotations
 
 import os
-import subprocess
-import time
 from pathlib import Path
 
 import torch
@@ -101,6 +99,12 @@ TRAIN_DATA_PATH = (
     Path(__file__).resolve().parent.parent.parent
     / "data" / "processed" / "train.jsonl"
 )
+# Validation set — same schema as train.jsonl. Used for eval_loss + best-checkpoint
+# selection. Missing val.jsonl is non-fatal; eval is just disabled in that case.
+VAL_DATA_PATH = (
+    Path(__file__).resolve().parent.parent.parent
+    / "data" / "processed" / "val.jsonl"
+)
 
 # ----- Persona -----
 # Explicit Monty system prompt — the model sees this both during training
@@ -124,11 +128,15 @@ LORA_TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj"]
 # Tuned for an RTX PRO 6000 (96GB Blackwell). Plenty of headroom at batch 16.
 # For a 48GB GPU (A6000 / 6000 Ada / L40S): BATCH_SIZE=8, GRAD_ACCUMULATION=2.
 # For a 32GB GPU (RTX 5090): BATCH_SIZE=4, GRAD_ACCUMULATION=4.
-EPOCHS = 3
+EPOCHS = 2               # was 3; previous run showed loss plateaued by epoch ~1.
+                         # With load_best_model_at_end=True (see SFTConfig), TRL
+                         # will keep the best checkpoint regardless of where it landed.
 BATCH_SIZE = 16          # 3B + LoRA + bf16 + grad_checkpointing on 96GB — peak ~28GB.
                          # Logits tensor (batch x seq x 152k vocab x 2 bytes) dominates.
 GRAD_ACCUMULATION = 1    # Effective batch = BATCH_SIZE * GRAD_ACCUMULATION = 16
-LEARNING_RATE = 2e-4     # higher than full-FT because only ~0.2% of weights move
+LEARNING_RATE = 1e-4     # was 2e-4; lowered after observing grad_norm climbing late in
+                         # training (thrashing on conflicting examples). LoRA still
+                         # tolerates higher LR than full-FT because only ~0.2% of weights move.
 MAX_SEQ_LENGTH = 1024    # longest Monty responses approach ~500 tokens; 512 truncates
 
 
@@ -164,6 +172,29 @@ def build_dataset() -> Dataset:
     return Dataset.from_list(rows)
 
 
+def build_eval_dataset() -> Dataset | None:
+    """Read val.jsonl into the same chat-message shape as the train dataset.
+
+    Returns None if val.jsonl is absent — useful for local CPU smoke runs
+    where the dataset hasn't been scp'd over yet. The trainer falls back
+    to no per-step eval in that case.
+    """
+    if not VAL_DATA_PATH.exists():
+        return None
+
+    rows = [
+        {
+            "messages": [
+                {"role": "system", "content": SYSTEM},
+                {"role": "user", "content": pair.prompt},
+                {"role": "assistant", "content": pair.response},
+            ]
+        }
+        for pair in read_jsonl(VAL_DATA_PATH)
+    ]
+    return Dataset.from_list(rows)
+
+
 def main() -> None:
     print(f"Loading tokenizer + model: {MODEL_ID}")
     print("(First run downloads ~1 GB of weights to ~/.cache/huggingface/)")
@@ -189,19 +220,35 @@ def main() -> None:
 
     # ---- Dataset (messages format; TRL tokenizes internally) ----
     train_dataset = build_dataset()
-    print(f"\nDataset: {len(train_dataset)} examples")
+    eval_dataset = build_eval_dataset()
+
+    print(f"\nDataset: {len(train_dataset)} train examples", end="")
+    if eval_dataset is not None:
+        print(f", {len(eval_dataset)} val examples (per-step eval enabled)")
+    else:
+        print(" (no val.jsonl found — eval disabled, falling back to epoch save)")
 
     # ---- SFTConfig (TRL's TrainingArguments) ----
+    has_eval = eval_dataset is not None
     config = SFTConfig(
         output_dir=str(OUTPUT_DIR),
         num_train_epochs=EPOCHS,
         per_device_train_batch_size=BATCH_SIZE,
+        per_device_eval_batch_size=BATCH_SIZE,
         gradient_accumulation_steps=GRAD_ACCUMULATION,
         learning_rate=LEARNING_RATE,
         max_length=MAX_SEQ_LENGTH,  # was `max_seq_length=` in TRL <0.16
         logging_steps=1,
-        save_strategy="epoch",
-        save_total_limit=1,
+        # Per-step eval + best-checkpoint selection — fixes the "loss flat
+        # but grad_norm climbing" diagnosis from the previous run.
+        eval_strategy="steps" if has_eval else "no",
+        eval_steps=50,
+        save_strategy="steps" if has_eval else "epoch",
+        save_steps=50,
+        save_total_limit=3,        # keep best 3 by eval_loss
+        load_best_model_at_end=has_eval,
+        metric_for_best_model="eval_loss" if has_eval else None,
+        greater_is_better=False if has_eval else None,
         report_to="tensorboard",   # writes tfevents to OUTPUT_DIR/runs/<timestamp>/
         bf16=True,                 # H100 setting (Mac CPU build: set False + dtype=fp32)
         fp16=False,
@@ -225,6 +272,7 @@ def main() -> None:
         model=model,
         args=config,
         train_dataset=train_dataset,
+        eval_dataset=eval_dataset,   # None = no per-step eval; non-None = enables it
         peft_config=peft_config,
         processing_class=tokenizer,  # TRL >=0.13 API (was `tokenizer=`)
     )
@@ -290,19 +338,15 @@ def main() -> None:
     )
     print(f"Prompt:   {test_prompt!r}")
     print(f"Response: {response!r}")
-    # ---- Post-training safety net (cost protection) ----
-    # Two env vars, both opt-in:
-    #
+    # ---- Post-training HF Hub push (opt-in via env var) ----
     #   HF_PUSH_REPO=arunma/monty            (e.g.)
     #     Push the adapter + tokenizer to a private HF Hub repo. Lets
     #     you recover the model without scp'ing from the pod. Requires
     #     HF_TOKEN env var set (huggingface-cli login or via .env).
     #
-    #   TERMINATE_POD_AFTER_TRAIN=1
-    #     After training (and after HF push if requested), terminate
-    #     this RunPod pod via runpodctl. Prevents the "forgot to kill
-    #     the pod" $50 lesson. 30-second countdown before terminate;
-    #     Ctrl+C to abort.
+    # NOTE: pod does NOT auto-terminate. Run `runpodctl remove pod <id>`
+    # manually when you're done with training + eval — or chain it on
+    # your launch command if you want unattended shutdown.
     hub_repo = os.environ.get("HF_PUSH_REPO")
     if hub_repo:
         print(f"\nPushing adapter + tokenizer to HF Hub: {hub_repo}")
@@ -312,46 +356,7 @@ def main() -> None:
             print(f"  OK — https://huggingface.co/{hub_repo}")
         except Exception as e:
             print(f"  FAILED: {type(e).__name__}: {e}")
-            print("  Skipping pod auto-terminate so you can scp manually.")
-            return
-
-    if os.environ.get("TERMINATE_POD_AFTER_TRAIN") == "1":
-        pod_id = os.environ.get("RUNPOD_POD_ID")
-        if not pod_id:
-            print(
-                "\nTERMINATE_POD_AFTER_TRAIN=1 but RUNPOD_POD_ID is not set. "
-                "Are you running on a RunPod pod? Skipping auto-terminate."
-            )
-            return
-
-        print(f"\n!! AUTO-TERMINATING POD {pod_id} IN 30 SECONDS !!")
-        print(
-            "   Ctrl+C to abort — pod stays alive and you'll need to "
-            "terminate it manually via the RunPod dashboard."
-        )
-        try:
-            for sec in range(30, 0, -1):
-                print(f"   ...{sec}s ", end="\r", flush=True)
-                time.sleep(1)
-            print()
-        except KeyboardInterrupt:
-            print("\n  Aborted. Pod stays alive — TERMINATE IT MANUALLY.")
-            return
-
-        result = subprocess.run(
-            ["runpodctl", "remove", "pod", pod_id],
-            capture_output=True, text=True,
-        )
-        print(f"  runpodctl exit code: {result.returncode}")
-        if result.stdout:
-            print(f"  stdout: {result.stdout.strip()}")
-        if result.stderr:
-            print(f"  stderr: {result.stderr.strip()}")
-        if result.returncode != 0:
-            print(
-                "  !! runpodctl FAILED. CHECK THE RUNPOD DASHBOARD AND "
-                "TERMINATE THE POD MANUALLY. !!"
-            )
+            print("  Pod stays alive — scp the adapter from checkpoints/final manually.")
 
 
 if __name__ == "__main__":
