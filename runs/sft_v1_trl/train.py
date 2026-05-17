@@ -181,7 +181,7 @@ def main() -> None:
         logging_steps=1,
         save_strategy="epoch",
         save_total_limit=1,
-        report_to="none",          # no wandb/tensorboard auto-init
+        report_to="tensorboard",   # writes tfevents to OUTPUT_DIR/runs/<timestamp>/
         bf16=True,                 # H100 setting (Mac CPU build: set False + dtype=fp32)
         fp16=False,
         gradient_checkpointing=True,  # ~10% slower, ~30% VRAM headroom — cheap insurance
