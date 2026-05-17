@@ -582,50 +582,127 @@ about what the run showed. Skip it and runs blur together.
 
 ## 13. End-to-end cheat sheet
 
-For a complete Phase A run, the full sequence from "I'm ready to
-launch" to "the pod is terminated and the adapter is on my Mac":
+The fast version. For a complete Phase A run with all safety nets
+on, the full sequence from "ready to launch" to "adapter on HF Hub
++ pod auto-terminated."
+
+### Pre-flight (on Mac, before launching anything)
 
 ```bash
-# === On Mac, before launching ===
-git status                            # clean working tree
-wc -l data/processed/train.jsonl      # ~15000 lines
+git log -1 --oneline                  # confirm you're on the latest commit
 git push                              # make sure pod can pull latest
+wc -l data/processed/train.jsonl      # 14293
+wc -l data/processed/val.jsonl        # 273
+```
 
-# Set a calendar reminder for now + 1 hour.
+```
+[ ] Phone alarm set for now + 90 min     (in case auto-terminate doesn't fire)
+[ ] RunPod account funded ($10+ buys this whole project)
+[ ] HF_TOKEN copied to clipboard or in local .env
+[ ] RTX 5090 selected on RunPod (or whichever GPU is available)
+```
 
-# === Launch pod via RunPod web UI, then SSH in ===
-ssh root@<host> -p <port>
+### On the pod (after SSH in)
 
-# === On pod ===
+```bash
+# === Setup ===
 cd /workspace
 git clone https://github.com/arunma/learn-you-an-sft.git
 cd learn-you-an-sft
 curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env
 uv venv && uv pip install -e .
-
-# === Get data onto pod (from Mac, separate terminal) ===
-scp -P <port> data/processed/*.jsonl data/processed/manifest.json \
-  root@<host>:/workspace/learn-you-an-sft/data/processed/
-
-# === Back on pod, start training under tmux ===
-tmux new -s train
-uv run python -m runs.sft_v1_trl.train 2>&1 | tee runs/sft_v1_trl/train.log
-# Ctrl-b d to detach
-
-# === Watch utilization (Ctrl-b c for new tmux window on pod) ===
-watch -n 1 nvidia-smi
-
-# === When done, pull checkpoint back (from Mac) ===
-scp -P <port> -r \
-  root@<host>:/workspace/learn-you-an-sft/runs/sft_v1_trl/checkpoints/final \
-  runs/sft_v1_trl/checkpoints/
-
-# === TERMINATE THE POD VIA WEB UI ===
-# Verify zero running pods on the dashboard.
-
-# === Log cost in runs/COSTS.md ===
-# Update with date, minutes, dollars, stage, what you learned.
+nvidia-smi                            # confirm GPU
 ```
+
+### Get training data onto the pod (from Mac, separate terminal)
+
+```bash
+scp -P <pod-port> \
+  data/processed/train.jsonl \
+  data/processed/val.jsonl \
+  data/processed/manifest.json \
+  root@<pod-host>:/workspace/learn-you-an-sft/data/processed/
+```
+
+Optionally also `scp .env` so you don't have to type `HF_TOKEN`:
+
+```bash
+scp -P <pod-port> .env root@<pod-host>:/workspace/learn-you-an-sft/.env
+```
+
+### Train (back on pod, inside tmux)
+
+```bash
+tmux new -s train
+
+# Three env vars: HF_TOKEN unlocks Hub push, HF_PUSH_REPO names the
+# destination, TERMINATE_POD_AFTER_TRAIN=1 makes the pod self-destruct.
+export HF_TOKEN=hf_xxxxxxxxxxxxx              # OR: source .env if you scp'd it
+export HF_PUSH_REPO=arunma/monty
+export TERMINATE_POD_AFTER_TRAIN=1
+
+# Sanity: RUNPOD_POD_ID should print a UUID
+echo "POD_ID = $RUNPOD_POD_ID"
+
+# Launch. Pod will train ~25 min, push adapter to HF Hub, then
+# auto-terminate after a 30-second countdown.
+uv run python -m runs.sft_v1_trl.train 2>&1 | tee runs/sft_v1_trl/train.log
+# Ctrl-b d to detach. tmux attach -t train to reattach.
+```
+
+### Optional: live TensorBoard (Mac browser → pod)
+
+```bash
+# On pod, separate tmux window (Ctrl-b c):
+tensorboard --logdir runs/sft_v1_trl/checkpoints/runs --port 6006 --bind_all
+
+# On Mac, separate terminal — leave it open:
+ssh -L 6006:localhost:6006 -p <pod-port> root@<pod-host> -N
+
+# Mac browser:
+open http://localhost:6006
+```
+
+### When training finishes
+
+The pod auto-terminates ~30 s after the final log line. The adapter
+is on HF Hub at `huggingface.co/arunma/monty`. Pull to Mac:
+
+```bash
+# Either with the HF CLI…
+huggingface-cli download arunma/monty --local-dir runs/sft_v1_trl/checkpoints/final
+
+# …or in Python:
+python -c "
+from peft import PeftModel
+from transformers import AutoModelForCausalLM
+base = AutoModelForCausalLM.from_pretrained('Qwen/Qwen2.5-0.5B-Instruct')
+model = PeftModel.from_pretrained(base, 'arunma/monty')
+print(model.print_trainable_parameters())
+"
+```
+
+### Final house-keeping (back on Mac)
+
+```bash
+# 1. Confirm the pod is gone via the RunPod dashboard
+#    "My pods" should show zero running.
+
+# 2. Log the run in runs/COSTS.md
+#    Date, GPU, mins, $/hr, $, stage, one line on what you learned.
+
+# 3. Optional: tar the local checkpoint to keep a backup
+tar -czf runs/sft_v1_trl/checkpoints/final.tar.gz \
+        runs/sft_v1_trl/checkpoints/final
+```
+
+### If auto-terminate didn't fire (the safety nets failed)
+
+You'll find out from the phone alarm. Open the RunPod dashboard,
+click the trash icon, confirm zero running pods. Update
+`runs/COSTS.md` with the actual minutes the pod ran. Then read the
+`runs/sft_v1_trl/train.log` to see why the script crashed before
+reaching the auto-terminate block.
 
 ---
 
