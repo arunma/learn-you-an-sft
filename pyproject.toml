@@ -9,17 +9,13 @@ license = {text = "MIT"}
 dependencies = [
   # Stage 2b — filter pipeline
   "ftfy>=6.1",
-  "fasttext>=0.9.2",
   "datasketch>=1.6",
   "tqdm>=4.65",
-
   # Stage 1.5 — Gemini teacher (synthesis)
   "google-genai>=1.0",   # new SDK; replaces deprecated google-generativeai
   "python-dotenv>=1.0",   # load GEMINI_API_KEY etc. from .env
-
   # Stage 2.5 — Claude Haiku judge
   "anthropic>=0.30",
-
   # Stage 3a / 4 — SFT training stack
   "torch>=2.1",
   "transformers>=4.44",  # Qwen2.5 chat template support
@@ -27,18 +23,17 @@ dependencies = [
   "datasets>=2.14",
   "accelerate>=0.30",
   "safetensors>=0.4",
-
   # Stage 4 v1 — TRL + LoRA
   "peft>=0.11",
   "trl>=0.9",
   # bitsandbytes is CUDA-only; skipped on macOS so local installs succeed.
   "bitsandbytes>=0.43; sys_platform == 'linux'",
-
   # Dev tooling
   "ruff",
   "black",
   "mypy",
   "pytest",
+  "fasttext-numpy2>=0.10.4",
 ]
 
 [tool.setuptools.packages.find]
