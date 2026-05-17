@@ -273,7 +273,7 @@ def main() -> None:
     # ---- Post-training safety net (cost protection) ----
     # Two env vars, both opt-in:
     #
-    #   HF_PUSH_REPO=<namespace>/<repo-name>
+    #   HF_PUSH_REPO=arunma/monty            (e.g.)
     #     Push the adapter + tokenizer to a private HF Hub repo. Lets
     #     you recover the model without scp'ing from the pod. Requires
     #     HF_TOKEN env var set (huggingface-cli login or via .env).

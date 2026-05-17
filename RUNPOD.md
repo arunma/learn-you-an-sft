@@ -470,7 +470,7 @@ turn the pod into a self-cleaning oven. **Use them.**
 
 | Env var | Behaviour |
 |---|---|
-| `HF_PUSH_REPO=arunma/learn-you-an-sft-monty-v1` | After training, push the adapter + tokenizer to a private HF Hub repo. Lets you recover the model without scp'ing — adapter survives pod death. Requires `HF_TOKEN` env var. |
+| `HF_PUSH_REPO=arunma/monty` | After training, push the adapter + tokenizer to a private HF Hub repo. Lets you recover the model without scp'ing — adapter survives pod death. Requires `HF_TOKEN` env var. |
 | `TERMINATE_POD_AFTER_TRAIN=1` | After training (and HF push if requested), invoke `runpodctl remove pod $RUNPOD_POD_ID`. Permanently kills the pod (compute + storage gone, billing stops). 30-second countdown gives you time to Ctrl+C if you're watching. |
 
 **Full safety-net launch command** (on the pod, inside tmux):
@@ -478,7 +478,7 @@ turn the pod into a self-cleaning oven. **Use them.**
 ```bash
 # Set the safety env vars. Adjust HF_PUSH_REPO to your namespace.
 export HF_TOKEN=hf_...                                   # from huggingface.co/settings/tokens
-export HF_PUSH_REPO=arunma/learn-you-an-sft-monty-v1
+export HF_PUSH_REPO=arunma/monty
 export TERMINATE_POD_AFTER_TRAIN=1
 
 # Train. Pod self-destructs ~30s after the script's final print.
