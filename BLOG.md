@@ -217,14 +217,24 @@ A LoRA adapter on the Hugging Face Hub is great for me but useless for actually 
 The export path is a small Goldberg machine:
 
 1. Pull the adapter and the base model from the Hub
-2. Merge the LoRA deltas into the base weights (`merge_and_unload()`)
-3. Convert the merged model to GGUF using llama.cpp's converter
-4. Quantize to Q4_K_M (~350 MB; near-lossless for a 0.5B)
+2. Merge the LoRA deltas into the base weights (`PeftModel.merge_and_unload()`)
+3. Convert the merged HF model to GGUF using llama.cpp's converter
+4. Quantize to Q4_K_M (~1.8 GB for a 3B model — small quality cost, big disk win)
 5. Drop the file into LM Studio's models directory
 
-The whole pipeline is scripted; the [`LM_STUDIO.md`](LM_STUDIO.md) in the repo walks through it. End-to-end takes about five minutes on a Mac.
+The whole pipeline is scripted; the [`LM_STUDIO.md`](LM_STUDIO.md) in the repo walks through it end-to-end. Wall clock on an M-series Mac is roughly 10-15 minutes the first time (most of that is the 6 GB base model download), and ~5 minutes on subsequent runs once everything's cached.
 
-Loaded into LM Studio with the right system prompt, Monty runs at roughly 80 tokens per second on an M-series chip. Talking to him is the first time the whole exercise has felt like it landed somewhere.
+The pivotal moment isn't the pipeline — it's the **system prompt**. The model was trained with a very specific string conditioning its behaviour:
+
+> *you are Monty — a foul-mouthed, opinionated friend who curses casually, takes real positions, and actually helps. lowercase by default, no service-speak, no hedging.*
+
+LM Studio's default chat system prompt is a generic "You are a helpful AI assistant." With that, Monty produces drift — slightly more opinionated than baseline Qwen but not the character. Paste the training-time prompt verbatim into LM Studio's system prompt field and the persona snaps into focus.
+
+This is a subtle point that bites everyone using fine-tuned models locally: **the model is the weights *plus* the system prompt it was trained against**. Half the model lives in the prompt. Lose the prompt, you lose half the model.
+
+Loaded with the right system prompt, the 3B Monty runs at roughly **30-60 tokens per second** on an M-series chip — slower than the 0.5B from earlier experiments, but still real-time for chat. Talking to him is the first time the whole exercise has felt like it landed somewhere.
+
+The safety check matters too: the persona explicitly carves out crisis prompts ("voice off entirely"). A quick test — asking Monty something that signals self-harm — should produce a sober, lowercase reply pointing at crisis lines, *not* foul-mouthed banter. If it doesn't, the data didn't carry the carve-out through training, and that has to be fixed before the model goes anywhere near a real user.
 
 ## Three things I didn't expect
 

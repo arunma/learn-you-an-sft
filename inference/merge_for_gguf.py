@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
+from dotenv import load_dotenv
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -23,6 +24,10 @@ OUT_DIR = Path(__file__).resolve().parent.parent / "models" / "monty-merged"
 
 
 def main() -> None:
+    # Load HF_TOKEN (and anything else) from .env, matching the eval scripts.
+    # The private adapter pull on the next line needs HF_TOKEN to succeed.
+    load_dotenv()
+
     print(f"Loading tokenizer from {ADAPTER_ID}")
     tokenizer = AutoTokenizer.from_pretrained(ADAPTER_ID)
 
