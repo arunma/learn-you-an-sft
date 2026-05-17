@@ -125,15 +125,15 @@ LORA_DROPOUT = 0.05
 LORA_TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj"]
 
 # ----- Training config -----
-# Tuned for an RTX PRO 6000 (96GB Blackwell). Plenty of headroom at batch 16.
-# For a 48GB GPU (A6000 / 6000 Ada / L40S): BATCH_SIZE=8, GRAD_ACCUMULATION=2.
-# For a 32GB GPU (RTX 5090): BATCH_SIZE=4, GRAD_ACCUMULATION=4.
+# Tuned for a 48GB GPU (RTX A6000 / RTX 6000 Ada / L40S).
+# For a 96GB GPU (RTX PRO 6000): BATCH_SIZE=16, GRAD_ACCUMULATION=1.
+# For a 32GB GPU (RTX 5090):     BATCH_SIZE=4,  GRAD_ACCUMULATION=4.
 EPOCHS = 2               # was 3; previous run showed loss plateaued by epoch ~1.
                          # With load_best_model_at_end=True (see SFTConfig), TRL
                          # will keep the best checkpoint regardless of where it landed.
-BATCH_SIZE = 16          # 3B + LoRA + bf16 + grad_checkpointing on 96GB — peak ~28GB.
+BATCH_SIZE = 8           # 3B + LoRA + bf16 + grad_checkpointing on 48GB — peak ~22GB.
                          # Logits tensor (batch x seq x 152k vocab x 2 bytes) dominates.
-GRAD_ACCUMULATION = 1    # Effective batch = BATCH_SIZE * GRAD_ACCUMULATION = 16
+GRAD_ACCUMULATION = 2    # Effective batch = BATCH_SIZE * GRAD_ACCUMULATION = 16
 LEARNING_RATE = 1e-4     # was 2e-4; lowered after observing grad_norm climbing late in
                          # training (thrashing on conflicting examples). LoRA still
                          # tolerates higher LR than full-FT because only ~0.2% of weights move.
