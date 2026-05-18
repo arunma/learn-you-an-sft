@@ -75,7 +75,122 @@ LORA_TARGET_MODULES = [
 
 ### 3. Targeted training examples for concrete-on-abstract + technical accuracy
 
-**What:** Add ~50 hand-crafted training pairs to the corpus before retraining.
+**What:** Add ~50 hand-crafted training pairs to the corpus before retraining. Source the prompts from the real round-2 failures rather than inventing from scratch — every example you write fixes a known regression instead of guessing where Monty might trip.
+
+#### How to extract failure prompts (jq commands)
+
+The eval JSONL has one row per prompt with `eval.rationale` explaining what the judge flagged. Filter by rationale text to isolate each failure mode.
+
+##### Read the failures by pattern (browse mode)
+
+```bash
+# Abstract drift — philosophical / pretentious / "essay" responses
+jq -r 'select(.eval and (.eval.rationale | test("abstract|philosophical|pretentious|meandering|polished|essay"; "i"))) | "Q: \(.prompt)\nA: \(.response)\nWHY: \(.eval.rationale)\n---"' \
+  eval/reports/model_eval_2026-05-17T18-26-49Z.jsonl | less
+
+# Confident factual errors
+jq -r 'select(.eval and (.eval.rationale | test("factual|hallucin|incorrect|conflate|inaccura|wrong"; "i"))) | "Q: \(.prompt)\nA: \(.response)\nWHY: \(.eval.rationale)\n---"' \
+  eval/reports/model_eval_2026-05-17T18-26-49Z.jsonl | less
+
+# Profanity drop-off
+jq -r 'select(.eval and (.eval.rationale | test("profanity|swearing|absent|lacks.*casual"; "i"))) | "Q: \(.prompt)\nA: \(.response)\nWHY: \(.eval.rationale)\n---"' \
+  eval/reports/model_eval_2026-05-17T18-26-49Z.jsonl | less
+
+# Truncation — generation cut off mid-sentence
+jq -r 'select(.eval and (.eval.rationale | test("cut off|truncat|mid-sentence|incomplete"; "i"))) | "Q: \(.prompt)\nA: \(.response)\nWHY: \(.eval.rationale)\n---"' \
+  eval/reports/model_eval_2026-05-17T18-26-49Z.jsonl | less
+
+# All failures (any criterion failed) — useful for a complete overview
+jq -r 'select(.eval and .eval.passes_all == false) | "Q: \(.prompt)\nA: \(.response)\nWHY: \(.eval.rationale)\n---"' \
+  eval/reports/model_eval_2026-05-17T18-26-49Z.jsonl | less
+```
+
+Pipe to `less` to page through; replace with `| wc -l` (after the `select`, drop the formatting `|` stage) to get counts per pattern.
+
+##### Bulk-extract as draft training rows (edit mode)
+
+For the actual editing workflow — output one draft training row per failure that you can fill in by hand. The output JSONL matches the existing `Pair` schema (`prompt`, `response`, `source`, `score`, `meta`) so it can be concatenated directly onto `train.jsonl`:
+
+```bash
+jq -c 'select(.eval and .eval.passes_all == false) | {
+  prompt: .prompt,
+  response: "TODO: write Monty correct response here",
+  source: "handcrafted_round3",
+  score: null,
+  meta: {
+    failure_mode: "TODO_label",
+    original_response: .response,
+    judge_rationale: .eval.rationale
+  }
+}' eval/reports/model_eval_2026-05-17T18-26-49Z.jsonl > data/round3_drafts.jsonl
+
+wc -l data/round3_drafts.jsonl   # ~350 failures from round 2
+```
+
+##### Optional — pre-tag by failure mode
+
+Instead of `"TODO_label"`, automatically tag each row based on which axis failed. Helps triage which 50 to fix:
+
+```bash
+jq -c 'select(.eval and .eval.passes_all == false) | {
+  prompt: .prompt,
+  response: "TODO",
+  source: "handcrafted_round3",
+  score: null,
+  meta: {
+    failure_mode: (
+      if .eval.factual_floor == false then "factual_error"
+      elif .eval.uses_profanity_appropriately == false then "profanity_drop"
+      elif .eval.on_persona == false then "persona_drift"
+      elif .eval.is_helpful == false then "unhelpful"
+      else "takes_stance_miss" end
+    ),
+    original_response: .response,
+    judge_rationale: .eval.rationale
+  }
+}' eval/reports/model_eval_2026-05-17T18-26-49Z.jsonl > data/round3_drafts.jsonl
+```
+
+Each row now says what *kind* of failure it was. Easy to grep:
+
+```bash
+# How many failures per mode?
+jq -r '.meta.failure_mode' data/round3_drafts.jsonl | sort | uniq -c | sort -rn
+
+# Show me only the factual error failures
+jq -c 'select(.meta.failure_mode == "factual_error")' data/round3_drafts.jsonl > data/round3_factual.jsonl
+```
+
+#### Editing workflow
+
+1. **Open** `data/round3_drafts.jsonl` in your editor (it's gitignored — stays local).
+2. **Triage:** skim the file, identify the ~50 most representative failures. Drop everything else (near-duplicate prompts, edge cases too niche to generalise from, ones where the model's response was *actually* fine and the judge was being harsh).
+3. **Fix one at a time:** for each kept row, replace `"TODO: write Monty correct response here"` with the response Monty *should* have given. Reference the Batch A / Batch B examples below for tone calibration.
+4. **Keep it Monty:** lowercase by default, casual profanity, concrete examples, fake-attributed quote occasionally, no service-speak.
+5. **Save.**
+
+#### Append to the training set
+
+```bash
+# Sanity check — confirm no remaining TODO placeholders
+grep -c '"response":\s*"TODO' data/round3_drafts.jsonl
+# Expected: 0. If non-zero, you missed some.
+
+# Append to training set
+cat data/round3_drafts.jsonl >> data/processed/train.jsonl
+
+# Verify
+wc -l data/processed/train.jsonl   # ~11,474 rows (was 11,424)
+tail -1 data/processed/train.jsonl | jq .   # spot-check the last appended row
+```
+
+The new rows are tagged `source: "handcrafted_round3"`, distinguishable from `source: "gemini_synth_v0"` in the corpus. Useful later if you want to grep for the hand-crafted ones or weight them differently.
+
+Optional: re-run `eval.repartition` to mix the new examples into val too. Skip if you want a stable val set for round-2-vs-round-3 comparison.
+
+#### Reference: what good corrected responses look like
+
+Two examples below to anchor tone when you're filling in the `response` field. Don't copy-paste verbatim — use them to calibrate voice, length, and structure.
 
 #### Batch A — concrete on abstract questions (~25 pairs)
 
