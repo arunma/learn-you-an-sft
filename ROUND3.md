@@ -34,6 +34,42 @@ Four failure patterns drive the 42% headline (derived from sampling ~50 failure 
 
 ## Round 3 fixes (ordered by effort)
 
+### 0. Base model switch — Qwen3-4B-Instruct-2507
+
+Round 3 swaps the base from `Qwen/Qwen2.5-3B-Instruct` to **`Qwen/Qwen3-4B-Instruct-2507`**. Qwen3 is the newer architecture (released 2025); the `-Instruct-2507` variant is the non-thinking instruct flavour, suitable for direct chat. The other Qwen3-4B variants (plain `Qwen/Qwen3-4B` with hybrid thinking, or `Qwen/Qwen3-4B-Thinking-2507`) toggle `<think>` blocks that interfere with persona-style work — avoid.
+
+**Implications:**
+
+- **Trainable params with MLP-LoRA:** ~30-35M (vs ~25M projected on Qwen2.5-3B). Confirm at the `Trainable parameters under LoRA:` print at start of training. If wildly off (e.g. <5M or >100M), the LoRA target module discovery missed something.
+- **Memory on 48 GB:** peak ~26-30 GB at batch 8 with MLP-LoRA + grad_checkpointing. Still fits but tighter than round 2. **If OOM in the first 20 steps**, drop to `BATCH_SIZE=4`, `GRAD_ACCUMULATION=4` in `train.py` (same effective batch 16).
+- **`transformers >= 4.51` required.** Already bumped in `pyproject.toml`.
+- **llama.cpp must be recent.** Qwen3 GGUF support landed mid-2025. `git pull` your `~/code/llama.cpp` clone before running `convert_hf_to_gguf.py`.
+- **Push target:** `arunma/monty-qwen3` (keeps the round-2 Qwen2.5 adapter intact at `arunma/monty` for blog comparison):
+  ```bash
+  export HF_PUSH_REPO=arunma/monty-qwen3
+  ```
+- **Identity quirk:** likely shifts from "I'm Qwen" to "I'm Qwen3". MLP-LoRA reach should help override this; no guarantees.
+- **Possible upside:** Qwen3 has stronger technical priors than Qwen2.5. The HMTX-style hallucinations may be less frequent *even before* Batch B training pairs land. Your `factual_floor` might exceed the 90% target in the table below.
+
+**Chat template sanity check** — run this on the pod **before** kicking off training to verify Qwen3's chat template has the `{% generation %}` marker TRL needs for `assistant_only_loss=True`:
+
+```bash
+uv run python -c "
+from transformers import AutoTokenizer
+tok = AutoTokenizer.from_pretrained('Qwen/Qwen3-4B-Instruct-2507')
+msgs = [
+    {'role': 'system', 'content': 'you are Monty'},
+    {'role': 'user', 'content': 'should I learn Rust?'},
+    {'role': 'assistant', 'content': 'fuck yeah, you should.'},
+]
+print(tok.apply_chat_template(msgs, tokenize=False))
+print('---')
+print('has generation marker:', 'generation' in (tok.chat_template or ''))
+"
+```
+
+Expect the printed conversation to render cleanly with system/user/assistant turns, and `has generation marker: True`. If it's `False`, `assistant_only_loss=True` will silently fall back to computing loss over the entire sequence (suboptimal). The fallback in that case is to switch to TRL's `DataCollatorForCompletionOnlyLM` — but Qwen3-Instruct-2507 should have the marker.
+
 ### 1. Bump `--max-new-tokens` to 512 at eval (no retraining)
 
 **What:** In `eval/run_eval.py`, default `--max-new-tokens` is 256. Change default or pass `--max-new-tokens 512` at the CLI.

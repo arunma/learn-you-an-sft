@@ -1886,7 +1886,7 @@ requires-dist = [
     { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.5.1,<2.6" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.5.1,<2.6", index = "https://download.pytorch.org/whl/cu124" },
     { name = "tqdm", specifier = ">=4.65" },
-    { name = "transformers", specifier = ">=4.44" },
+    { name = "transformers", specifier = ">=4.51" },
     { name = "trl", specifier = ">=0.9" },
 ]
 

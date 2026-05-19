@@ -21,7 +21,7 @@ dependencies = [
   # (ncclCommWindowDeregister) not always available in RunPod's PyTorch image.
   # See [tool.uv.sources] below for the Linux-only cu124 wheel routing.
   "torch>=2.5.1,<2.6",
-  "transformers>=4.44",  # Qwen2.5 chat template support
+  "transformers>=4.51",  # Qwen3 chat template support (was 4.44 for Qwen2.5)
   "tokenizers>=0.15",
   "datasets>=2.14",
   "accelerate>=0.30",

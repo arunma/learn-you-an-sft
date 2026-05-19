@@ -9,7 +9,7 @@ LM Studio cannot load PEFT adapters directly — it only loads GGUF files via ll
 3. **Quantize** (optional but recommended)
 4. **Drop into LM Studio's models folder**
 
-End-to-end takes ~10-15 minutes for the 3B model on an M-series Mac. Most of that is the first-time base model download.
+End-to-end takes ~10-15 minutes for the 4B model on an M-series Mac. Most of that is the first-time base model download (~8 GB for Qwen3-4B-Instruct-2507; ~6 GB if you're still on the round-2 Qwen2.5-3B-Instruct base).
 
 ## Resource requirements (Mac)
 
@@ -36,19 +36,19 @@ uv run python -m inference.merge_for_gguf
 ```
 
 This:
-- Pulls `Qwen/Qwen2.5-3B-Instruct` from HF Hub (~6 GB, cached after first run)
-- Pulls the `arunma/monty` adapter (~30 MB)
+- Pulls `Qwen/Qwen3-4B-Instruct-2507` from HF Hub (~8 GB, cached after first run; round 2 used Qwen2.5-3B at ~6 GB)
+- Pulls the `arunma/monty` (or `arunma/monty-qwen3`) adapter (~30-70 MB depending on LoRA scope)
 - Calls `PeftModel.merge_and_unload()` to fold LoRA deltas into the base weights
 - Saves the result to `models/monty-merged/` (HF format: `config.json`, `model.safetensors`, tokenizer files)
 
-Output: a ~6 GB folder you can convert directly with llama.cpp.
+Output: a ~8 GB folder you can convert directly with llama.cpp.
 
 ### Sanity check
 
 ```bash
 ls -lah models/monty-merged/
-# model.safetensors should be ~6 GB. If it's ~30 MB, only the adapter saved —
-# something went wrong in the merge step.
+# model.safetensors should be ~8 GB for Qwen3-4B (~6 GB for Qwen2.5-3B).
+# If it's only ~30 MB, only the adapter saved — something went wrong in the merge.
 ```
 
 ---
@@ -58,17 +58,18 @@ ls -lah models/monty-merged/
 Clone llama.cpp once, then convert:
 
 ```bash
-# One-time setup
+# One-time setup (or `git pull` if you cloned this months ago — Qwen3 GGUF
+# support landed mid-2025 and isn't in older llama.cpp checkouts)
 git clone https://github.com/ggml-org/llama.cpp ~/code/llama.cpp
 pip install -r ~/code/llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
 
 # Convert (from learn-you-an-sft repo root)
 python ~/code/llama.cpp/convert_hf_to_gguf.py models/monty-merged \
-  --outfile models/monty-3b-f16.gguf \
+  --outfile models/monty-4b-f16.gguf \
   --outtype f16
 ```
 
-Result: `models/monty-3b-f16.gguf` (~6 GB, full f16 precision).
+Result: `models/monty-4b-f16.gguf` (~8 GB for Qwen3-4B; was ~6 GB for round-2 Qwen2.5-3B).
 
 ---
 
@@ -79,24 +80,24 @@ Result: `models/monty-3b-f16.gguf` (~6 GB, full f16 precision).
 cd ~/code/llama.cpp
 cmake -B build && cmake --build build --config Release -j
 
-# Quantize to Q4_K_M (best size/quality tradeoff for 3B)
+# Quantize to Q4_K_M (best size/quality tradeoff for 4B)
 ./build/bin/llama-quantize \
-  /Users/arunmanivannan/projects/ai/learn-you-an-sft/models/monty-3b-f16.gguf \
-  /Users/arunmanivannan/projects/ai/learn-you-an-sft/models/monty-3b-q4_k_m.gguf \
+  /Users/arunmanivannan/projects/ai/learn-you-an-sft/models/monty-4b-f16.gguf \
+  /Users/arunmanivannan/projects/ai/learn-you-an-sft/models/monty-4b-q4_k_m.gguf \
   Q4_K_M
 ```
 
-Result: `monty-3b-q4_k_m.gguf` (~1.8 GB). For a 3B model the quality gap vs. f16 is small.
+Result: `monty-4b-q4_k_m.gguf` (~2.4 GB). For a 4B model the quality gap vs. f16 is small.
 
-Common quant flavors for 3B:
+Common quant flavors for 4B (round-3 base):
 
-| Format | Size (3B) | When |
+| Format | Size (4B) | When |
 |---|---|---|
-| `Q4_K_M` | ~1.8 GB | Default. Best size/quality balance. |
-| `Q5_K_M` | ~2.1 GB | Slightly higher fidelity. |
-| `Q6_K`   | ~2.5 GB | Diminishing returns past here. |
-| `Q8_0`   | ~3.2 GB | Near-lossless; pick when disk isn't tight. |
-| `f16`    | ~6 GB   | Skip quantization entirely. |
+| `Q4_K_M` | ~2.4 GB | Default. Best size/quality balance. |
+| `Q5_K_M` | ~2.8 GB | Slightly higher fidelity. |
+| `Q6_K`   | ~3.3 GB | Diminishing returns past here. |
+| `Q8_0`   | ~4.2 GB | Near-lossless; pick when disk isn't tight. |
+| `f16`    | ~8 GB   | Skip quantization entirely. |
 
 ---
 
@@ -108,12 +109,12 @@ LM Studio expects this folder structure on macOS:
 ~/.lmstudio/models/
 └── arunma/
     └── monty/
-        └── monty-3b-q4_k_m.gguf
+        └── monty-4b-q4_k_m.gguf
 ```
 
 ```bash
 mkdir -p ~/.lmstudio/models/arunma/monty
-cp models/monty-3b-q4_k_m.gguf ~/.lmstudio/models/arunma/monty/
+cp models/monty-4b-q4_k_m.gguf ~/.lmstudio/models/arunma/monty/
 ```
 
 ---
@@ -164,8 +165,8 @@ You only need the final quantized GGUF for ongoing use. Reclaim ~12 GB of disk:
 
 ```bash
 rm -rf models/monty-merged              # ~6 GB (regeneratable from merge step)
-rm models/monty-3b-f16.gguf             # ~6 GB (regeneratable from convert step)
-# Keep: models/monty-3b-q4_k_m.gguf     # ~1.8 GB — your shippable artifact
+rm models/monty-4b-f16.gguf             # ~6 GB (regeneratable from convert step)
+# Keep: models/monty-4b-q4_k_m.gguf     # ~1.8 GB — your shippable artifact
 ```
 
 ---
@@ -191,7 +192,10 @@ Only the LoRA adapter got saved, not the merged model. Re-check that the script 
 `HF_TOKEN` isn't loaded or doesn't have permission for `arunma/monty`. Verify `grep "^HF_TOKEN=" .env` finds your token, and the token has the right scopes at huggingface.co/settings/tokens.
 
 **Apple Silicon performance.**
-LM Studio uses Metal automatically. The 3B model at Q4_K_M runs at ~30-60 tok/s on M-series chips with no extra config. Slower than the 0.5B (~80 tok/s) but still real-time for chat.
+LM Studio uses Metal automatically. The 4B model at Q4_K_M runs at ~25-50 tok/s on M-series chips with no extra config (was ~30-60 tok/s for the round-2 3B; ~80 tok/s for the round-1 0.5B). Still real-time for chat.
+
+**LM Studio reports it as "Qwen" / "Qwen2" but it's Qwen3.**
+Older LM Studio versions don't have explicit Qwen3 metadata recognition yet. The model still loads and runs correctly via llama.cpp's GGUF reader — the label is cosmetic. Upgrade LM Studio to the latest release if the label bothers you.
 
 ---
 
@@ -205,14 +209,14 @@ uv run python -m inference.merge_for_gguf
 
 # 2. Re-convert
 python ~/code/llama.cpp/convert_hf_to_gguf.py models/monty-merged \
-  --outfile models/monty-3b-f16.gguf --outtype f16
+  --outfile models/monty-4b-f16.gguf --outtype f16
 
 # 3. Re-quantize
 ~/code/llama.cpp/build/bin/llama-quantize \
-  models/monty-3b-f16.gguf models/monty-3b-q4_k_m.gguf Q4_K_M
+  models/monty-4b-f16.gguf models/monty-4b-q4_k_m.gguf Q4_K_M
 
 # 4. Replace the file in LM Studio's folder
-cp models/monty-3b-q4_k_m.gguf ~/.lmstudio/models/arunma/monty/
+cp models/monty-4b-q4_k_m.gguf ~/.lmstudio/models/arunma/monty/
 ```
 
 LM Studio picks up the new file on the next model load (no need to restart).

@@ -83,7 +83,13 @@ from trl import SFTConfig, SFTTrainer
 from data.ingest.schema import read_jsonl
 
 # ----- Model / output -----
-MODEL_ID = "Qwen/Qwen2.5-3B-Instruct"
+# Qwen3-4B-Instruct-2507 — the non-thinking Instruct variant of Qwen3-4B.
+# Round 2 used Qwen/Qwen2.5-3B-Instruct; round 3 swaps to Qwen3-4B for better
+# base capability (sharper technical priors, stronger instruction-following).
+# Avoid the plain "Qwen/Qwen3-4B" (hybrid thinking mode) and the
+# "Qwen/Qwen3-4B-Thinking-2507" variant — those toggle <think> blocks that
+# interfere with persona-style direct chat.
+MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507"
 OUTPUT_DIR = Path(__file__).resolve().parent / "checkpoints"
 
 # Training data — the quality-filtered + re-split Gemini corpus.
@@ -131,8 +137,9 @@ LORA_TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj"]
 EPOCHS = 2               # was 3; previous run showed loss plateaued by epoch ~1.
                          # With load_best_model_at_end=True (see SFTConfig), TRL
                          # will keep the best checkpoint regardless of where it landed.
-BATCH_SIZE = 8           # 3B + LoRA + bf16 + grad_checkpointing on 48GB — peak ~22GB.
+BATCH_SIZE = 8           # 4B + LoRA + bf16 + grad_checkpointing on 48GB — peak ~26-30GB.
                          # Logits tensor (batch x seq x 152k vocab x 2 bytes) dominates.
+                         # If OOM in first 20 steps, drop to BATCH_SIZE=4, GRAD_ACCUMULATION=4.
 GRAD_ACCUMULATION = 2    # Effective batch = BATCH_SIZE * GRAD_ACCUMULATION = 16
 LEARNING_RATE = 1e-4     # was 2e-4; lowered after observing grad_norm climbing late in
                          # training (thrashing on conflicting examples). LoRA still
