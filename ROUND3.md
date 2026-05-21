@@ -70,7 +70,7 @@ Watch the first ~20 log lines for:
 - First `eval_loss` printed at step 50
 - No OOM in steps 1-20
 
-**If OOM in first 20 steps:** stop, edit `train.py` to `BATCH_SIZE=4`, `GRAD_ACCUMULATION=4`, restart. Same effective batch 16, half the peak memory.
+**Memory check on PRO 6000 (96GB):** at `BATCH_SIZE=16, GRAD_ACCUMULATION=1` (round 3's tuning), expected peak is ~34 GB. Comfortable headroom on 96 GB. If running on a 48 GB card instead (A6000/6000 Ada/L40S), drop to `BATCH_SIZE=8, GRAD_ACCUMULATION=2` — same effective batch 16.
 
 ### On the pod — eval (~25 min, ~$1.20 in Haiku)
 
