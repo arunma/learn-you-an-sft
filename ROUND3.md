@@ -70,7 +70,9 @@ Watch the first ~20 log lines for:
 - First `eval_loss` printed at step 50
 - No OOM in steps 1-20
 
-**Memory check on PRO 6000 (96GB):** at `BATCH_SIZE=16, GRAD_ACCUMULATION=1` (round 3's tuning), expected peak is ~34 GB. Comfortable headroom on 96 GB. If running on a 48 GB card instead (A6000/6000 Ada/L40S), drop to `BATCH_SIZE=8, GRAD_ACCUMULATION=2` — same effective batch 16.
+**Memory check on 48GB (RTX 6000 Ada / A6000 / L40S):** at `BATCH_SIZE=8, GRAD_ACCUMULATION=2` (round 3's tuning), expected peak is ~26 GB. If OOM in first 20 steps, drop to `BATCH_SIZE=4, GRAD_ACCUMULATION=4`.
+
+**Why not PRO 6000?** Blackwell is sm_120; our `torch==2.5.1+cu124` pin only ships kernels up to sm_90 (Hopper). Trying the PRO 6000 errors at the first kernel launch (`no kernel image is available for execution on the device`). Fix would be moving to `torch>=2.7+cu128` — viable but needs careful NCCL/transformers re-testing. Tracked as future work.
 
 ### On the pod — eval (~25 min, ~$1.20 in Haiku)
 
