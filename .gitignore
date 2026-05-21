@@ -8,7 +8,7 @@ __pycache__/
 # Data — never committed (regeneratable from synth)
 data/raw/
 data/interim/
-data/processed/
+#data/processed/
 
 # Runs — large; pull selectively if needed
 runs/*/checkpoints/

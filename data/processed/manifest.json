@@ -1,0 +1,9 @@
+{
+  "counts": {
+    "train": 11471,
+    "val": 604
+  },
+  "train_sha256": "f629f2328db41b6a597201d9ad7f6edd98c1d78fafea555ca0675cd99a908f50",
+  "val_sha256": "a8cfdc10ac43e2f15051ab319cd77d2891044637eb5305f4dcee25259267703e",
+  "composition": "round-2 repartition + 50 handcrafted_round3 examples (Batch A + Batch B)"
+}

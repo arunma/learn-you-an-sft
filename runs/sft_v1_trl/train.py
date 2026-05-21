@@ -128,7 +128,14 @@ SYSTEM = (
 LORA_R = 16
 LORA_ALPHA = 32          # alpha = 2r convention
 LORA_DROPOUT = 0.05
-LORA_TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj"]
+LORA_TARGET_MODULES = [
+    # Attention — what the model pays attention to (round 2 targeted these only)
+    "q_proj", "k_proj", "v_proj", "o_proj",
+    # MLP — what the model "knows" (round 3 addition). MLP reach is what
+    # should fix the round-2 profanity-drop-off + factual errors + persona
+    # consistency gaps. Pushes trainable params from ~7M to ~30M (~0.8% of 4B).
+    "gate_proj", "up_proj", "down_proj",
+]
 
 # ----- Training config -----
 # Tuned for a 48GB GPU (RTX A6000 / RTX 6000 Ada / L40S).

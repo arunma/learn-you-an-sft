@@ -52,6 +52,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scored-train", required=True, help="Scored train JSONL path")
     parser.add_argument("--scored-val", required=True, help="Scored val JSONL path")
     parser.add_argument(
+        "--extra-passing",
+        default=None,
+        help="Optional JSONL of pre-passed Pair records (e.g. hand-crafted "
+             "examples). Bypasses the passes_all filter; merged into the kept "
+             "pool before shuffle+split.",
+    )
+    parser.add_argument(
         "--train-out",
         default=str(DEFAULT_TRAIN_OUT),
         help="Output path for new train JSONL",
@@ -96,9 +103,17 @@ def main(argv: list[str] | None = None) -> int:
     judge_failures = sum(1 for r in combined if r.get("eval") is None)
     passes_all = [r for r in combined if r.get("eval") and r["eval"].get("passes_all")]
     print(
-        f"\nCombined: {total_in} rows "
+        f"\nCombined scored: {total_in} rows "
         f"(judge_failures={judge_failures}, passes_all={len(passes_all)})"
     )
+
+    extras: list[dict] = []
+    if args.extra_passing:
+        extras_path = Path(args.extra_passing)
+        print(f"\nReading extras (pre-passed): {extras_path}")
+        extras = _read_scored(extras_path)
+        print(f"  {len(extras)} rows (bypass filter, added directly to kept pool)")
+        passes_all.extend(extras)
 
     if not passes_all:
         raise SystemExit("No rows passed the filter; nothing to write.")
@@ -122,9 +137,12 @@ def main(argv: list[str] | None = None) -> int:
         for r in val_split:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
-    kept_rate = len(passes_all) / total_in if total_in else 0.0
+    n_scored_kept = len(passes_all) - len(extras)
+    kept_rate = n_scored_kept / total_in if total_in else 0.0
     print("\n=== New split ===")
-    print(f"  passes_all kept:    {len(passes_all)} / {total_in}  ({kept_rate:.1%})")
+    print(f"  scored kept:        {n_scored_kept} / {total_in}  ({kept_rate:.1%})")
+    if extras:
+        print(f"  extras pre-passed:  +{len(extras)} rows")
     print(f"  val fraction:       {args.val_fraction:.0%}  (seed={args.seed})")
     print(f"  train: {len(train_split):>5d} rows -> {train_out}")
     print(f"  val:   {len(val_split):>5d} rows -> {val_out}")
