@@ -185,7 +185,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top-p", type=float, default=0.9)
-    parser.add_argument("--max-new-tokens", type=int, default=256)
+    parser.add_argument("--max-new-tokens", type=int, default=512)  # was 256; round 2 saw truncation on longer Monty answers
     parser.add_argument(
         "--limit",
         type=int,

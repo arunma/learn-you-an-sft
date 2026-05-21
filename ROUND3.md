@@ -6,6 +6,103 @@ This doc captures the diagnosis + planned fixes so the work can resume tomorrow 
 
 ---
 
+## Status (all code prep is done)
+
+| Item | Where | Status |
+|---|---|---|
+| Base → `Qwen/Qwen3-4B-Instruct-2507` | `runs/sft_v1_trl/train.py`, `inference/merge_for_gguf.py` | ✅ |
+| `transformers >= 4.51` | `pyproject.toml`, `uv.lock` | ✅ |
+| MLP-LoRA targets (`gate_proj`, `up_proj`, `down_proj`) | `runs/sft_v1_trl/train.py` | ✅ |
+| `--extra-passing` flag for repartition | `eval/repartition.py` | ✅ |
+| 50 hand-crafted round-3 examples (Batch A + B) | `data/round3_handcrafted/` | ✅ |
+| Repartitioned `train.jsonl` / `val.jsonl` | `data/processed/` — 11,471 train + 604 val, 48/2 round-3 split | ✅ |
+| `--max-new-tokens` default bumped 256 → 512 | `eval/run_eval.py` | ✅ |
+
+**Skipping the dataset eval re-run.** The 50 hand-crafted examples are vouched for; the rest of the corpus was already passes_all-filtered in round 2. Save the ~$0.05 + ~30 min and go straight to training.
+
+---
+
+## Quick launch (tomorrow, top to bottom)
+
+### Mac
+
+```bash
+git pull   # confirm at latest commit (round-3 prep)
+uv run python -m scripts.pod_up
+```
+
+`pod_up` prints SSH + tunnel commands. SSH in (separate terminal).
+
+### On the pod — sanity check first (~10 sec)
+
+```bash
+cd /workspace/learn-you-an-sft
+
+uv run python -c "
+from transformers import AutoTokenizer
+tok = AutoTokenizer.from_pretrained('Qwen/Qwen3-4B-Instruct-2507')
+msgs = [
+    {'role': 'system', 'content': 'you are Monty'},
+    {'role': 'user', 'content': 'should I learn Rust?'},
+    {'role': 'assistant', 'content': 'fuck yeah, you should.'},
+]
+print(tok.apply_chat_template(msgs, tokenize=False))
+print('---')
+print('has generation marker:', 'generation' in (tok.chat_template or ''))
+"
+```
+
+Expect a rendered three-turn conversation + `has generation marker: True`. If `False`, **stop and flag** — `assistant_only_loss=True` won't work cleanly without it.
+
+### On the pod — train (~1.5 hr)
+
+```bash
+export HF_PUSH_REPO=arunma/monty-qwen3   # keeps round-2 arunma/monty intact
+
+tmux new -s train
+uv run python -m runs.sft_v1_trl.train 2>&1 | tee runs/sft_v1_trl/train_round3.log
+# Ctrl-b, d to detach
+```
+
+Watch the first ~20 log lines for:
+- `Trainable parameters under LoRA: ~30M` (~0.8% of 4B) — confirms MLP modules took
+- Loss starting around 2.0-2.4 ticking down
+- First `eval_loss` printed at step 50
+- No OOM in steps 1-20
+
+**If OOM in first 20 steps:** stop, edit `train.py` to `BATCH_SIZE=4`, `GRAD_ACCUMULATION=4`, restart. Same effective batch 16, half the peak memory.
+
+### On the pod — eval (~25 min, ~$1.20 in Haiku)
+
+After training auto-pushes to `arunma/monty-qwen3`:
+
+```bash
+uv run python -m eval.run_eval \
+  --adapter arunma/monty-qwen3 \
+  --concurrency 10 \
+  2>&1 | tee eval/reports/tuned_v3.log
+```
+
+(`--max-new-tokens 512` is now the default; no need to pass it explicitly.)
+
+### Back on Mac — pull results + terminate
+
+```bash
+# Replace <PORT> and <HOST> from the pod_up SSH command
+scp -i ~/.ssh/id_ed25519_arunma -P <PORT> \
+  "root@<HOST>:/workspace/learn-you-an-sft/eval/reports/model_eval*round3*" \
+  "root@<HOST>:/workspace/learn-you-an-sft/runs/sft_v1_trl/checkpoints/checkpoint-*/trainer_state.json" \
+  ./
+
+uv run python -m scripts.pod_down
+```
+
+### Compare numbers
+
+Open the new `model_eval_summary_*.json` next to the round-2 `model_eval_summary_2026-05-17T18-26-49Z.json`. Per-axis comparison vs round 2 is what reads the result.
+
+---
+
 ## What round 2 got right
 
 | Axis | Score | Read |
