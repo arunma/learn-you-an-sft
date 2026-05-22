@@ -87,6 +87,10 @@ if [ ! -d "${LLAMA_CPP_DIR}" ]; then
     # warning about index confusion — fine for llama.cpp's well-known reqs.
     uv pip install --index-strategy unsafe-best-match \
         -r "${LLAMA_CPP_DIR}/requirements/requirements-convert_hf_to_gguf.txt"
+    # sentencepiece isn't in the requirements file but is needed for Qwen
+    # tokenizer conversion (optional import inside the converter). Install
+    # explicitly so the conversion step doesn't bail on ModuleNotFoundError.
+    uv pip install --index-strategy unsafe-best-match sentencepiece
 else
     echo "==> [2/5] llama.cpp already cloned at ${LLAMA_CPP_DIR}"
 fi
