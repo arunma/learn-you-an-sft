@@ -81,7 +81,12 @@ if [ ! -d "${LLAMA_CPP_DIR}" ]; then
         apt-get install -y -qq cmake build-essential
     fi
     git clone --depth=1 https://github.com/ggml-org/llama.cpp "${LLAMA_CPP_DIR}"
-    uv pip install -r "${LLAMA_CPP_DIR}/requirements/requirements-convert_hf_to_gguf.txt"
+    # --index-strategy unsafe-best-match: our pyproject pins the pytorch-cu124
+    # index for torch, which doesn't carry transformers. Without this flag uv
+    # refuses to fall back to PyPI. The "unsafe" name is a privacy/security
+    # warning about index confusion — fine for llama.cpp's well-known reqs.
+    uv pip install --index-strategy unsafe-best-match \
+        -r "${LLAMA_CPP_DIR}/requirements/requirements-convert_hf_to_gguf.txt"
 else
     echo "==> [2/5] llama.cpp already cloned at ${LLAMA_CPP_DIR}"
 fi
