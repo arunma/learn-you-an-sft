@@ -38,7 +38,7 @@ from eval.judge import DEFAULT_CONCURRENCY, DEFAULT_JUDGE_MODEL, judge_pairs_asy
 
 DEFAULT_VAL = Path("data/processed/val.jsonl")
 DEFAULT_REPORTS_DIR = Path("eval/reports")
-DEFAULT_BASE = "Qwen/Qwen2.5-3B-Instruct"
+DEFAULT_BASE = "Qwen/Qwen3-4B-Instruct-2507"   # was Qwen/Qwen2.5-3B-Instruct (round 2); update alongside MODEL_ID in train.py when retraining on a new base
 DEFAULT_ADAPTER = "arunma/monty"
 
 
