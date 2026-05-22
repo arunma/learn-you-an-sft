@@ -18,8 +18,11 @@ from dotenv import load_dotenv
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-BASE_ID = "Qwen/Qwen3-4B-Instruct-2507"   # was Qwen/Qwen2.5-3B-Instruct (round 2)
-ADAPTER_ID = "arunma/monty"                # update to arunma/monty-qwen3 once round 3 is pushed
+import os as _os
+# Defaults track the latest round (round 3). Override via env vars for older runs:
+#   BASE_ID=Qwen/Qwen2.5-3B-Instruct ADAPTER_ID=arunma/monty uv run python -m inference.merge_for_gguf
+BASE_ID = _os.environ.get("BASE_ID", "Qwen/Qwen3-4B-Instruct-2507")
+ADAPTER_ID = _os.environ.get("ADAPTER_ID", "arunma/monty3")
 OUT_DIR = Path(__file__).resolve().parent.parent / "models" / "monty-merged"
 
 
