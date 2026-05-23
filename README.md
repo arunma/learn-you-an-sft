@@ -1,85 +1,76 @@
 # learn-you-an-sft
 
-Small instruct-tuned LLM that responds like a witty friend who roasts
-you — useful answer + sarcastic delivery + casual profanity when it
-fits. Built end-to-end as a vehicle for learning **LLM internals + ops**
-the hard way.
+Fine-tuning a small language model into a specific persona — a from-scratch
+walk through the supervised fine-tuning pipeline, with real numbers and
+honest failure modes.
 
-Sibling project: `learn-you-an-hf-llm` (TinyStories pretraining). This
-project picks up where that one ends — taking a pre-trained base model
-and fine-tuning it on (prompt, response) pairs synthesised by Gemini
-2.5 Pro, then judging the result with Claude Haiku 4.5.
+**Full story:** [Blog post →](https://www.arunma.com/) <!-- TODO: update to the specific post URL post-publish -->
 
-**Learning SFT from first principles?** Start with
-[TUTORIAL.md](TUTORIAL.md) — a copywork walkthrough covering
-(prompt, response) pair design, chat templates, loss masking, and
-batching, with runnable code for each lesson.
-
-Running the real training on a cloud H100? See
-[RUNPOD.md](RUNPOD.md) — operations playbook: pod launch, code/data
-transfer, tmux discipline, terminating the pod (the critical step),
-cost ledger, common failure modes.
-
-Full project context, locked decisions, and ops practices: see
-[HANDOFF.md](HANDOFF.md).
-
-## Two parallel training pipelines, same data, same eval
-
-|  | Phase A (`runs/sft_v1_trl/`) | Phase B (`runs/sft_v2_internals/`) |
-|---|---|---|
-| Goal | Working pipeline, fast | Understand every layer |
-| Training loop | `trl.SFTTrainer` | Hand-rolled |
-| Adapter | `peft` LoRA | Full fine-tune (no PEFT) |
-| Chat template | `tokenizer.apply_chat_template` | Hand-built with explicit special tokens |
-| Loss masking | TRL handles it | Explicit `-100` on prompt tokens |
-| Sequence packing | TRL handles it | Hand-rolled with cross-example attention isolation |
-| Lines of code | ~150 | ~500 |
-| Base model | Qwen2.5-0.5B (chosen for native tool-call chat template) | Qwen2.5-0.5B |
-
-If both produce comparable judge win-rates on the same eval set, the
-abstractions TRL hides have been demystified.
-
-## Layout
-
-```
-learn-you-an-sft/
-├── synthesis/                Stage 1.5: Gemini-distilled (prompt, response) pairs
-├── data/
-│   ├── ingest/               Canonical Pair schema (schema.py only after the synth pivot)
-│   ├── filter/               Stage 2b: normalize → language → dedup → train/val + manifest
-│   ├── interim/              Pair JSONL from synthesis runs (not committed)
-│   └── processed/            train.jsonl, val.jsonl, manifest.json (not committed)
-├── eval/                     Stage 2.5: locked prompt set + Claude-Haiku judge
-├── runs/
-│   ├── sft_v1_trl/           Stage 4 v1: TRL + LoRA
-│   └── sft_v2_internals/     Stage 4 v2: hand-rolled
-└── inference/                Stage 5: hand-rolled generation + chat CLI
-```
+**Trained adapter + GGUFs:** [`arunma/monty3`](https://huggingface.co/arunma/monty3)
 
 ## Setup
 
 ```bash
-# In this folder
-uv venv
-uv pip install -e .
-uv lock                       # pin to a uv.lock; commit that
-
-# Once: fasttext language ID model (~125 MB)
-mkdir -p ~/.cache/fasttext
-curl -L https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin \
-     -o ~/.cache/fasttext/lid.176.bin
-
-# Secrets — set in your shell or ~/.zshrc
-export GEMINI_API_KEY=...     # Stage 1.5 synthesis (Gemini 2.5 Pro)
-export ANTHROPIC_API_KEY=...  # Stage 2.5 judge (Claude Haiku 4.5)
+uv sync
+cp .env.example .env  # fill in HF_TOKEN, ANTHROPIC_API_KEY, GEMINI_API_KEY
 ```
 
-Dependencies live in [pyproject.toml](pyproject.toml). `bitsandbytes`
-is CUDA-only and is excluded on macOS so local installs don't fail.
+## What's in here
 
-## Stage status
+The blog walks the pipeline end-to-end. Code maps to:
 
-See the in-session task list and `HANDOFF.md` for the full plan. Each
-stage's folder has its own README explaining *why* its choices are
-what they are — the pedagogy lives in the READMEs, not in inline
-comments.
+| Stage | Path |
+|---|---|
+| Persona prompt + Gemini distillation | `synthesis/` |
+| Normalize / language filter / dedup | `data/filter/` |
+| `Pair` schema (single `(prompt, response)` record) | `data/ingest/` |
+| Chat template + assistant-only loss mask | `data/format/` |
+| Final training corpus (~11.5k train / 604 val) | `data/processed/` |
+| LoRA SFT with TRL | `runs/sft_v1_trl/train.py` |
+| Haiku-as-judge rubric + per-prompt scoring | `eval/` |
+| Merge adapter into base for GGUF export | `inference/merge_for_gguf.py` |
+
+## Reproduce
+
+End-to-end on a GPU pod (assumes `HF_TOKEN`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` set):
+
+```bash
+# 1. Synthesize the training corpus (skip if reusing data/processed/)
+uv run python -m synthesis.question_pool --count 15000
+uv run python -m synthesis.generate --questions-file data/interim/question_pool.jsonl --count 15000
+
+# 2. Filter (normalize -> language -> dedup -> split)
+uv run python -m data.filter.pipeline
+
+# 3. Score with the Haiku judge to quality-rate the synthesized pairs
+uv run python -m eval.score_dataset --input data/processed/train.jsonl --sample 99999
+uv run python -m eval.score_dataset --input data/processed/val.jsonl --sample 999
+
+# 4. Re-partition: combine scored train + val, filter to passes_all, re-split
+uv run python -m eval.repartition \
+  --scored-train eval/reports/dataset_scored_<train_ts>.jsonl \
+  --scored-val   eval/reports/dataset_scored_<val_ts>.jsonl
+
+# 5. Train (LoRA on Qwen3-4B-Instruct-2507, attention + MLP target modules)
+uv run python -m runs.sft_v1_trl.train
+
+# 6. Eval against the trained adapter
+uv run python -m eval.run_eval --adapter arunma/monty3
+
+# 7. (Optional) merge into base and convert to GGUF for local LM Studio use
+uv run python -m inference.merge_for_gguf
+# Then llama.cpp's convert_hf_to_gguf.py + llama-quantize — see the blog
+```
+
+## Iteration history
+
+The messy reality — three training rounds, every failed attempt, the
+RunPod automation scripts, the original Lesson-by-Lesson tutorial draft —
+lives in a separate, private repo. Not public because it's a working
+journal, not a curated reference.
+
+This repo is the curated reference. The blog tells the story.
+
+## License
+
+MIT.
