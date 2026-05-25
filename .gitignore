@@ -1,27 +1,26 @@
 .venv/
+.ruff_cache/
 __pycache__/
 *.pyc
 *.egg-info/
-.DS_Store
 *.log
+.DS_Store
+.env
 
-# Data — never committed (regeneratable from synth)
+# Data: raw synth output is regeneratable; processed train/val is committed.
 data/raw/
 data/interim/
-#data/processed/
 
-# Runs — large; pull selectively if needed
+# Trainer outputs (checkpoints, adapters, intermediate state).
 runs/*/checkpoints/
 runs/*/loss.jsonl
+trainer_state*.json
 
-# Merged / quantized model artifacts (regeneratable from HF Hub adapter)
+# Merged + quantized models — pull from HF Hub on demand.
 models/
 
-# Eval reports (large JSONL + summary JSON; regeneratable from judge runs)
+# Eval reports — regenerated per run.
 eval/reports/
 
-# RunPod pod-id state file (written by scripts/pod_up, read by scripts/pod_down)
+# RunPod state.
 .runpod_pod_id
-
-# Local secrets
-.env

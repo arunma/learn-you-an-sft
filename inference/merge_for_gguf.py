@@ -1,16 +1,14 @@
-"""Merge the Monty LoRA adapter into Qwen2.5-0.5B-Instruct and save as a standalone HF model.
+"""Merge a LoRA adapter into its base model and save as a standalone HF checkpoint.
 
-This produces a self-contained HF-format checkpoint ready to convert to GGUF via
-llama.cpp's `convert_hf_to_gguf.py`. See LM_STUDIO.md for the full pipeline.
+Output is ready for llama.cpp's `convert_hf_to_gguf.py` to turn into a GGUF.
 
-Usage:
-    uv run python -m inference.merge_for_gguf
-
-Output:
-    models/monty-merged/   (HF format: config.json + model.safetensors + tokenizer files)
+Override the base and adapter via env vars:
+    BASE_ID=Qwen/Qwen3-4B-Instruct-2507 ADAPTER_ID=arunma/monty3 \\
+        uv run python -m inference.merge_for_gguf
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import torch
@@ -18,11 +16,8 @@ from dotenv import load_dotenv
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-import os as _os
-# Defaults track the latest round (round 3). Override via env vars for older runs:
-#   BASE_ID=Qwen/Qwen2.5-3B-Instruct ADAPTER_ID=arunma/monty uv run python -m inference.merge_for_gguf
-BASE_ID = _os.environ.get("BASE_ID", "Qwen/Qwen3-4B-Instruct-2507")
-ADAPTER_ID = _os.environ.get("ADAPTER_ID", "arunma/monty3")
+BASE_ID = os.environ.get("BASE_ID", "Qwen/Qwen3-4B-Instruct-2507")
+ADAPTER_ID = os.environ.get("ADAPTER_ID", "arunma/monty3")
 OUT_DIR = Path(__file__).resolve().parent.parent / "models" / "monty-merged"
 
 
