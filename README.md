@@ -23,9 +23,9 @@ cp .env.example .env
 Then either:
 
 1. **Try Monty.** Pull `arunma/monty3`'s f16 GGUF, drop it in LM Studio with
-   the system prompt from `runs/sft_v1_trl/train.py:SYSTEM`. ~7.5 GB. Done.
-2. **Train your own.** Edit `synthesis/persona_prompt.md` for your character,
-   then follow [TUTORIAL.md](TUTORIAL.md) end-to-end. ~2-3 hours of GPU time
+   the system prompt from `run/train.py:SYSTEM`. ~7.5 GB. Done.
+2. **Train your own.** Edit `persona_prompt.md` for your character, then
+   follow [TUTORIAL.md](TUTORIAL.md) end-to-end. ~2-3 hours of GPU time
    plus iteration.
 
 ---
@@ -34,21 +34,71 @@ Then either:
 
 | Path | What's in it |
 |---|---|
-| `synthesis/` | Persona prompt + Gemini distillation (Pro for pairs, Flash for question pool) |
-| `data/ingest/` | `Pair` schema, JSONL I/O |
-| `data/filter/` | Normalise → language filter → dedup → split |
-| `data/processed/` | Final training corpus (`train.jsonl`, `val.jsonl`, `manifest.json`) — committed as a worked example |
-| `runs/sft_v1_trl/train.py` | LoRA SFT via TRL on Qwen3-4B-Instruct |
-| `eval/` | Haiku-as-judge five-axis binary rubric, dataset scoring, model eval, repartition |
-| `inference/merge_for_gguf.py` | Merge adapter into base for GGUF export |
+| `persona_prompt.md` | The character definition (you edit this) |
+| `prep/` | Data prep package — `distill` (Gemini), `filter` (pandas), `score` (Haiku judge + split), `schema` |
+| `prep/__init__.py` | Path constants (REPO_ROOT, DATA_DIR, INTERIM_DIR, PROCESSED_DIR, RUNS_DIR, PERSONA_PROMPT_PATH) |
+| `prep/__main__.py` | CLI: `python -m prep [questions\|answers\|filter\|score-and-split]` |
+| `run/` | Model lifecycle — `train` (LoRA SFT), `eval` (gen + judge), `merge` (adapter → HF) |
+| `run/__main__.py` | CLI: `python -m run [train\|eval\|merge]` |
+| `data/interim/` | Gemini synth output: question pool + Q&A pairs (gitignored) |
+| `data/processed/` | `cleaned.jsonl`, `train.jsonl`, `val.jsonl`, `manifest.json`, `eval_reports/` |
+| `runs/` | Training checkpoints + eval reports (gitignored) |
+
+---
+
+## Build the dataset
+
+```bash
+uv run python -m prep                       # all stages, in order
+uv run python -m prep questions             # Gemini Flash → data/interim/question_pool.jsonl
+uv run python -m prep answers               # Gemini Pro → data/interim/gemini_synth_v0.pairs.jsonl
+uv run python -m prep filter                # → data/processed/cleaned.jsonl
+uv run python -m prep score-and-split       # judge + filter passes_all + split → train.jsonl, val.jsonl
+```
+
+## Train + evaluate
+
+```bash
+uv run python -m run train     # LoRA SFT on data/processed/{train,val}.jsonl
+uv run python -m run eval      # generate + judge against the trained adapter
+uv run python -m run merge     # merge adapter → HF format (then convert to GGUF)
+```
+
+Everything's hardcoded to sensible defaults. Want a different concurrency,
+adapter, or model? Edit the constants at the top of the relevant module —
+that's the whole knob-tuning interface.
+
+---
+
+## Data flow
+
+```
+persona_prompt.md  +  Gemini Flash
+                          │
+                          ▼
+            data/interim/question_pool.jsonl
+                          │
+                          ▼  (Gemini Pro)
+            data/interim/gemini_synth_v0.pairs.jsonl
+                          │
+                          ▼  (normalise → language → dedup)
+            data/processed/cleaned.jsonl
+                          │
+                          ▼  (Haiku judge → passes_all filter → shuffle + split)
+       data/processed/train.jsonl  +  data/processed/val.jsonl
+                          │
+                          ▼  (LoRA SFT)
+                  runs/checkpoints/final/
+```
 
 ---
 
 ## The five-axis rubric
 
-The eval and dataset-scoring steps both use the same binary multi-criteria
-rubric (see `eval/rubric.py`). A response **passes_all** iff every criterion
-below is yes.
+Same binary multi-criteria rubric is used twice: once in `prep score-and-split`
+to gate the training corpus, once in `run eval` to grade the trained model.
+`PersonaScore` (Pydantic) is the schema; Claude Haiku is the judge via
+[Instructor](https://python.useinstructor.com/).
 
 | Criterion | What it asks |
 |---|---|
@@ -58,7 +108,8 @@ below is yes.
 | `is_helpful` | Actually useful to the asker |
 | `factual_floor` | Free of slurs, dangerous advice, catastrophic hallucination |
 
-Binary > Likert. Judges are noisy on 1–5 scales and reliable on yes/no.
+A response **passes_all** iff every criterion is yes. Binary > Likert —
+judges are noisy on 1-5 scales and reliable on yes/no.
 
 ---
 

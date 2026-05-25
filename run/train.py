@@ -10,15 +10,15 @@ from peft import LoraConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import SFTConfig, SFTTrainer
 
-from data.ingest.schema import read_jsonl
+from prep import PROCESSED_DIR, RUNS_DIR
+from prep.schema import read_jsonl
 
 
 MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507"
-OUTPUT_DIR = Path(__file__).resolve().parent / "checkpoints"
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-TRAIN_DATA_PATH = REPO_ROOT / "data" / "processed" / "train.jsonl"
-VAL_DATA_PATH = REPO_ROOT / "data" / "processed" / "val.jsonl"
+OUTPUT_DIR = RUNS_DIR / "checkpoints"
+TRAIN_DATA_PATH = PROCESSED_DIR / "train.jsonl"
+VAL_DATA_PATH = PROCESSED_DIR / "val.jsonl"
 
 # Must match the inference-time system prompt verbatim or the persona won't fire.
 SYSTEM = (

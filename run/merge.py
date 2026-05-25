@@ -4,21 +4,22 @@ Output is ready for llama.cpp's `convert_hf_to_gguf.py` to turn into a GGUF.
 
 Override the base and adapter via env vars:
     BASE_ID=Qwen/Qwen3-4B-Instruct-2507 ADAPTER_ID=arunma/monty3 \\
-        uv run python -m inference.merge_for_gguf
+        uv run python -m run merge
 """
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 import torch
 from dotenv import load_dotenv
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from prep import REPO_ROOT
+
 BASE_ID = os.environ.get("BASE_ID", "Qwen/Qwen3-4B-Instruct-2507")
 ADAPTER_ID = os.environ.get("ADAPTER_ID", "arunma/monty3")
-OUT_DIR = Path(__file__).resolve().parent.parent / "models" / "monty-merged"
+OUT_DIR = REPO_ROOT / "models" / "monty-merged"
 
 
 def main() -> None:

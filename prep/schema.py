@@ -30,8 +30,6 @@ class Pair:
     meta: dict = field(default_factory=dict)
 
     def to_json(self) -> str:
-        # ensure_ascii=False so unicode (emoji, non-English) survives
-        # without becoming \uXXXX escape soup.
         return json.dumps(asdict(self), ensure_ascii=False)
 
 

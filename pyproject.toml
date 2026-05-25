@@ -7,31 +7,24 @@ requires-python = ">=3.10"
 license = {text = "MIT"}
 
 dependencies = [
-  # Stage 2b — filter pipeline
   "ftfy>=6.1",
   "datasketch>=1.6",
+  "pandas>=2.0",
   "tqdm>=4.65",
-  # Stage 1.5 — Gemini teacher (synthesis)
-  "google-genai>=1.0",   # new SDK; replaces deprecated google-generativeai
-  "python-dotenv>=1.0",   # load GEMINI_API_KEY etc. from .env
-  # Stage 2.5 — Claude Haiku judge
+  "google-genai>=1.0",
+  "python-dotenv>=1.0",
   "anthropic>=0.30",
-  # Stage 3a / 4 — SFT training stack
-  # Pinned to 2.5.x because 2.6.0+cu124 requires NCCL 2.23+ symbols
-  # (ncclCommWindowDeregister) not always available in RunPod's PyTorch image.
-  # See [tool.uv.sources] below for the Linux-only cu124 wheel routing.
+  "instructor>=1.6",
+  "pydantic>=2.0",
   "torch>=2.5.1,<2.6",
-  "transformers>=4.51",  # Qwen3 chat template support (was 4.44 for Qwen2.5)
+  "transformers>=4.51",
   "tokenizers>=0.15",
   "datasets>=2.14",
   "accelerate>=0.30",
   "safetensors>=0.4",
-  # Stage 4 v1 — TRL + LoRA
   "peft>=0.11",
   "trl>=0.9",
-  # bitsandbytes is CUDA-only; skipped on macOS so local installs succeed.
   "bitsandbytes>=0.43; sys_platform == 'linux'",
-  # Dev tooling
   "ruff",
   "black",
   "mypy",
@@ -45,9 +38,6 @@ dependencies = [
 where = ["."]
 include = ["data*", "synthesis*", "runs*"]
 
-# Route torch through the cu124 wheel index on Linux only. macOS gets the
-# default PyPI wheel (CPU/MPS build). This makes `uv sync` install the
-# CUDA-compatible torch directly on RunPod pods — no manual reinstall needed.
 [tool.uv.sources]
 torch = [
   { index = "pytorch-cu124", marker = "sys_platform == 'linux'" },
