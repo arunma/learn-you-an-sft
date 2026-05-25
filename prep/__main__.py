@@ -31,13 +31,13 @@ def main() -> None:
         "stage",
         nargs="?",
         choices=ALL_STAGE_NAMES,
-        help="Run a single stage. Omit to run all stages in order.",
+        help="Run a single stage. Skip to run all stages in order.",
     )
     args = parser.parse_args()
 
     selected = [(args.stage, dict(STAGES)[args.stage])] if args.stage else STAGES
     for name, fn in selected:
-        print(f"\n=== Stage: {name} ===")
+        print(f"\n>>> {name}")
         fn()
 
 

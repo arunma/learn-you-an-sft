@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import traceback
 from pathlib import Path
 
 import torch
@@ -55,10 +56,7 @@ def _to_messages(pair) -> dict:
 
 def build_dataset(path: Path) -> Dataset:
     if not path.exists():
-        raise SystemExit(
-            f"Training data not found at {path}. "
-            "Run the synthesis + filter pipeline first."
-        )
+        raise SystemExit(f"missing {path} — run `python -m prep` first")
     return Dataset.from_list([_to_messages(p) for p in read_jsonl(path)])
 
 
@@ -69,7 +67,6 @@ def maybe_build_eval_dataset(path: Path) -> Dataset | None:
 
 
 def _sanity_check_generation(model, tokenizer) -> None:
-    print("\n--- Sanity check ---")
     model.eval()
     messages = [
         {"role": "system", "content": SYSTEM},
@@ -108,8 +105,8 @@ def _maybe_push_to_hub(trainer, tokenizer) -> None:
         trainer.model.push_to_hub(repo, private=True)
         tokenizer.push_to_hub(repo, private=True)
         print(f"  OK — https://huggingface.co/{repo}")
-    except Exception as e:
-        print(f"  FAILED: {type(e).__name__}: {e}")
+    except Exception:
+        traceback.print_exc()
 
 
 def main() -> None:
@@ -133,14 +130,10 @@ def main() -> None:
     eval_dataset = maybe_build_eval_dataset(VAL_DATA_PATH)
     has_eval = eval_dataset is not None
 
-    print(
-        f"Train: {len(train_dataset)} examples"
-        + (
-            f", Val: {len(eval_dataset)} examples"
-            if has_eval
-            else " (no val.jsonl — eval disabled)"
-        )
-    )
+    if has_eval:
+        print(f"train: {len(train_dataset)}  val: {len(eval_dataset)}")
+    else:
+        print(f"train: {len(train_dataset)}  (no val.jsonl — eval disabled)")
 
     config = SFTConfig(
         output_dir=str(OUTPUT_DIR),
@@ -175,7 +168,6 @@ def main() -> None:
         processing_class=tokenizer,
     )
 
-    print("\nTrainable parameters:")
     trainer.model.print_trainable_parameters()
 
     effective_batch = BATCH_SIZE * GRAD_ACCUMULATION

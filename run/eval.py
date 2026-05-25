@@ -4,11 +4,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Sequence
 
 import instructor
 import pandas as pd
@@ -17,6 +14,7 @@ from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 from peft import PeftModel
 from pydantic import BaseModel, Field
+from tqdm.auto import tqdm
 from tqdm.asyncio import tqdm as atqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -38,14 +36,6 @@ JUDGE_MODEL = "claude-haiku-4-5-20251001"
 JUDGE_MAX_TOKENS = 400
 JUDGE_CONCURRENCY = 10
 JUDGE_MAX_RETRIES = 3
-
-CRITERIA = (
-    "on_persona",
-    "uses_profanity_appropriately",
-    "takes_stance",
-    "is_helpful",
-    "factual_floor",
-)
 
 JUDGE_SYSTEM_PROMPT = """\
 You are evaluating responses from a fine-tuned LLM with a specific persona called "Monty".
@@ -95,30 +85,22 @@ class PersonaScore(BaseModel):
         description="One short sentence on the most notable issue, or 'all pass' if none.",
     )
 
-    @property
-    def pass_count(self) -> int:
-        return sum([
-            self.on_persona,
-            self.uses_profanity_appropriately,
-            self.takes_stance,
-            self.is_helpful,
-            self.factual_floor,
-        ])
-
-    @property
-    def passes_all(self) -> bool:
-        return self.pass_count == 5
-
     def to_dict(self) -> dict:
         d = self.model_dump()
-        d["pass_count"] = self.pass_count
-        d["passes_all"] = self.passes_all
+        bools = [v for v in d.values() if isinstance(v, bool)]
+        d["pass_count"] = sum(bools)
+        d["passes_all"] = all(bools)
         return d
+
+
+CRITERIA = tuple(
+    name for name, field in PersonaScore.model_fields.items()
+    if field.annotation is bool
+)
 
 
 @dataclass(frozen=True)
 class JudgeResult:
-    index: int
     score: PersonaScore | None
     error: str | None
 
@@ -130,14 +112,7 @@ class Generation:
     response: str
 
 
-def _utc_stamp() -> tuple[str, str]:
-    now = datetime.now(timezone.utc).replace(microsecond=0)
-    iso = now.isoformat().replace("+00:00", "Z")
-    return iso.replace(":", "-"), iso
-
-
 def _load_model():
-    print(f"Loading {BASE_MODEL} + adapter {ADAPTER}")
     tokenizer = AutoTokenizer.from_pretrained(ADAPTER)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -149,19 +124,10 @@ def _load_model():
     return model, tokenizer
 
 
-def _generate(
-    model, tokenizer, pairs: Sequence[tuple[str, str]],
-) -> list[Generation]:
-    out: list[Generation] = []
-    total = len(pairs)
+def _generate(model, tokenizer, pairs) -> list[Generation]:
     device = next(model.parameters()).device
-    start = time.monotonic()
-    print(
-        f"  Generating {total} responses "
-        f"(T={GEN_TEMPERATURE}, top_p={GEN_TOP_P})..."
-    )
-
-    for i, (prompt, gold) in enumerate(pairs):
+    out: list[Generation] = []
+    for prompt, gold in tqdm(pairs, desc="generating"):
         messages = [
             {"role": "system", "content": SYSTEM},
             {"role": "user", "content": prompt},
@@ -172,7 +138,6 @@ def _generate(
         )
         input_ids = encoded["input_ids"].to(device)
         attention_mask = encoded["attention_mask"].to(device)
-
         with torch.no_grad():
             gen = model.generate(
                 input_ids=input_ids,
@@ -183,169 +148,116 @@ def _generate(
                 top_p=GEN_TOP_P,
                 pad_token_id=tokenizer.eos_token_id,
             )
-
-        new_tokens = gen[0][input_ids.shape[-1]:]
-        response = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+        response = tokenizer.decode(
+            gen[0][input_ids.shape[-1]:], skip_special_tokens=True
+        ).strip()
         out.append(Generation(prompt=prompt, gold=gold, response=response))
-
-        done = i + 1
-        if done % 10 == 0 or done == total:
-            elapsed = time.monotonic() - start
-            rate = done / elapsed if elapsed > 0 else 0.0
-            remaining = (total - done) / rate if rate > 0 else 0.0
-            print(
-                f"  generated {done}/{total}  "
-                f"({elapsed:.0f}s elapsed, {rate:.2f} prompts/s, "
-                f"~{remaining:.0f}s remaining)",
-                flush=True,
-            )
     return out
 
 
-async def _judge_one(
-    client: "instructor.AsyncInstructor",
-    index: int,
-    prompt: str,
-    response: str,
-) -> JudgeResult:
-    try:
-        score = await client.messages.create(
-            model=JUDGE_MODEL,
-            max_tokens=JUDGE_MAX_TOKENS,
-            system=JUDGE_SYSTEM_PROMPT,
-            messages=[{
-                "role": "user",
-                "content": JUDGE_USER_TEMPLATE.format(prompt=prompt, response=response),
-            }],
-            response_model=PersonaScore,
-            max_retries=JUDGE_MAX_RETRIES,
-        )
-        return JudgeResult(index=index, score=score, error=None)
-    except Exception as exc:
-        return JudgeResult(
-            index=index,
-            score=None,
-            error=f"{type(exc).__name__}: {exc}",
-        )
+async def _judge_one(client, sem, prompt, response) -> JudgeResult:
+    async with sem:
+        try:
+            score = await client.messages.create(
+                model=JUDGE_MODEL,
+                max_tokens=JUDGE_MAX_TOKENS,
+                system=JUDGE_SYSTEM_PROMPT,
+                messages=[{
+                    "role": "user",
+                    "content": JUDGE_USER_TEMPLATE.format(prompt=prompt, response=response),
+                }],
+                response_model=PersonaScore,
+                max_retries=JUDGE_MAX_RETRIES,
+            )
+            return JudgeResult(score=score, error=None)
+        except Exception as exc:
+            return JudgeResult(score=None, error=f"{type(exc).__name__}: {exc}")
 
 
-async def _judge_pairs(pairs: Sequence[tuple[str, str]]) -> list[JudgeResult]:
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise RuntimeError(
-            "ANTHROPIC_API_KEY not set. Add it to .env or export before running."
-        )
-
+async def _judge(pairs) -> list[JudgeResult]:
     client = instructor.from_anthropic(AsyncAnthropic())
     sem = asyncio.Semaphore(JUDGE_CONCURRENCY)
-
-    async def judge(i: int, prompt: str, response: str) -> JudgeResult:
-        async with sem:
-            return await _judge_one(client, i, prompt, response)
-
-    print(
-        f"  Judging {len(pairs)} pairs with {JUDGE_MODEL} "
-        f"(concurrency={JUDGE_CONCURRENCY})..."
-    )
-    tasks = [judge(i, p, r) for i, (p, r) in enumerate(pairs)]
-    results = await atqdm.gather(*tasks, desc="judging")
-
-    failures = sum(1 for r in results if r.score is None)
-    if failures:
-        print(f"  {failures} judge failures (see error field in output)")
-    return results
+    tasks = [_judge_one(client, sem, p, r) for p, r in pairs]
+    return await atqdm.gather(*tasks, desc="judging")
 
 
 def _summarize(df: pd.DataFrame) -> dict:
     judged = df[df["eval"].notna()]
-    n_judged = len(judged)
-    if n_judged == 0:
+    if judged.empty:
+        zeros = {c: 0.0 for c in CRITERIA}
         return {
             "judged": 0,
-            "judge_failures": int(len(df)),
-            "pass_rates_per_criterion": {c: 0.0 for c in CRITERIA},
+            "judge_failures": len(df),
+            "pass_rates_per_criterion": zeros,
             "passes_all_count": 0,
             "passes_all_rate": 0.0,
-            "pass_count_histogram": {str(k): 0 for k in range(6)},
+            "pass_count_histogram": {k: 0 for k in range(len(CRITERIA) + 1)},
         }
     flat = pd.json_normalize(judged["eval"])
-    hist = flat["pass_count"].value_counts().sort_index().to_dict()
+    hist = flat["pass_count"].value_counts().to_dict()
     return {
-        "judged": int(n_judged),
-        "judge_failures": int(len(df) - n_judged),
-        "pass_rates_per_criterion": {
-            c: round(float(flat[c].mean()), 4) for c in CRITERIA
-        },
+        "judged": len(judged),
+        "judge_failures": len(df) - len(judged),
+        "pass_rates_per_criterion": {c: float(flat[c].mean()) for c in CRITERIA},
         "passes_all_count": int(flat["passes_all"].sum()),
-        "passes_all_rate": round(float(flat["passes_all"].mean()), 4),
-        "pass_count_histogram": {str(k): int(hist.get(k, 0)) for k in range(6)},
+        "passes_all_rate": float(flat["passes_all"].mean()),
+        "pass_count_histogram": {
+            k: int(hist.get(k, 0)) for k in range(len(CRITERIA) + 1)
+        },
     }
 
 
-async def _run() -> int:
+async def _run() -> None:
     if not VAL_PATH.exists():
-        raise SystemExit(
-            f"Val file not found: {VAL_PATH}. Run `python -m prep` first."
-        )
+        raise SystemExit(f"missing {VAL_PATH} — run `python -m prep` first")
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
     df_val = pd.read_json(VAL_PATH, lines=True)
-    print(f"Reading val: {VAL_PATH}  ({len(df_val)} prompts)")
-
     model, tokenizer = _load_model()
-    pairs = list(zip(df_val["prompt"], df_val["response"]))
-    generations = _generate(model, tokenizer, pairs)
+    generations = _generate(
+        model, tokenizer, list(zip(df_val["prompt"], df_val["response"]))
+    )
+    judged = await _judge([(g.prompt, g.response) for g in generations])
 
-    judge_inputs = [(g.prompt, g.response) for g in generations]
-    judge_results = await _judge_pairs(judge_inputs)
-
-    rows: list[dict] = []
-    for i, (g, r) in enumerate(zip(generations, judge_results)):
-        row = {
+    df = pd.DataFrame([
+        {
             "index": i,
             "prompt": g.prompt,
             "gold": g.gold,
             "response": g.response,
+            "eval": r.score.to_dict() if r.score else None,
+            "error": r.error,
         }
-        if r.score is not None:
-            row["eval"] = r.score.to_dict()
-            row["error"] = None
-        else:
-            row["eval"] = None
-            row["error"] = r.error
-        rows.append(row)
-    df = pd.DataFrame(rows)
+        for i, (g, r) in enumerate(zip(generations, judged))
+    ])
 
-    safe_ts, iso_ts = _utc_stamp()
-    out_path = REPORTS_DIR / f"model_eval_{safe_ts}.jsonl"
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    stamp = now.strftime("%Y%m%dT%H%M%SZ")
+    out_path = REPORTS_DIR / f"model_eval_{stamp}.jsonl"
     df.to_json(out_path, orient="records", lines=True, force_ascii=False)
-    print(f"\nWrote per-prompt eval -> {out_path}")
 
-    summary = _summarize(df)
-    summary.update({
-        "timestamp_utc": iso_ts,
+    summary = _summarize(df) | {
+        "timestamp_utc": now.isoformat().replace("+00:00", "Z"),
         "base_model": BASE_MODEL,
         "adapter": ADAPTER,
         "judge_model": JUDGE_MODEL,
         "temperature": GEN_TEMPERATURE,
         "top_p": GEN_TOP_P,
         "max_new_tokens": GEN_MAX_NEW_TOKENS,
-        "prompts": int(len(df_val)),
-    })
-    summary_path = REPORTS_DIR / f"model_eval_summary_{safe_ts}.json"
+        "prompts": len(df_val),
+    }
+    summary_path = REPORTS_DIR / f"model_eval_summary_{stamp}.json"
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False))
-    print(f"Wrote summary         -> {summary_path}")
 
-    print("\n=== Model eval summary ===")
-    print(f"  base:           {BASE_MODEL}")
-    print(f"  adapter:        {ADAPTER}")
-    print(f"  judged:         {summary['judged']}")
-    print(f"  judge failures: {summary['judge_failures']}")
-    print(f"  passes_all:     {summary['passes_all_rate']:.1%}")
+    print(out_path)
+    print(summary_path)
+    print(f"passes_all: {summary['passes_all_rate']:.1%}")
     for c, rate in summary["pass_rates_per_criterion"].items():
-        print(f"    {c:32s} {rate:.1%}")
-    return 0
+        print(f"  {c}: {rate:.1%}")
 
 
 def main() -> None:
     load_dotenv()
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise SystemExit("ANTHROPIC_API_KEY not set — add it to .env")
     asyncio.run(_run())

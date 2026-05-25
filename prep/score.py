@@ -1,15 +1,4 @@
-"""Quality-gate the training corpus.
-
-One operation, three steps:
-  1. Score every (prompt, response) pair in data/processed/{train,val}.jsonl
-     with Claude Haiku against the five-axis persona rubric.
-  2. Combine the two splits and filter to passes_all rows.
-  3. Re-split into train/val (stable shuffle).
-
-If data/handcrafted_extras.jsonl exists, those rows bypass the filter and are
-added directly to the kept pool — useful for hand-crafted corrections that
-shouldn't have to pass the judge.
-"""
+"""Score the cleaned corpus with Haiku, keep passes_all rows, split train/val."""
 from __future__ import annotations
 
 import asyncio
@@ -18,7 +7,6 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
 
 import instructor
 import pandas as pd
@@ -45,14 +33,6 @@ JUDGE_MAX_RETRIES = 3
 
 VAL_FRACTION = 0.05
 SEED = 42
-
-CRITERIA = (
-    "on_persona",
-    "uses_profanity_appropriately",
-    "takes_stance",
-    "is_helpful",
-    "factual_floor",
-)
 
 JUDGE_SYSTEM_PROMPT = """\
 You are evaluating responses from a fine-tuned LLM with a specific persona called "Monty".
@@ -93,7 +73,6 @@ Score each criterion as a boolean:
 
 
 class PersonaScore(BaseModel):
-    """Five binary criteria + a short rationale."""
     on_persona: bool
     uses_profanity_appropriately: bool
     takes_stance: bool
@@ -103,184 +82,125 @@ class PersonaScore(BaseModel):
         description="One short sentence on the most notable issue, or 'all pass' if none.",
     )
 
-    @property
-    def pass_count(self) -> int:
-        return sum([
-            self.on_persona,
-            self.uses_profanity_appropriately,
-            self.takes_stance,
-            self.is_helpful,
-            self.factual_floor,
-        ])
-
-    @property
-    def passes_all(self) -> bool:
-        return self.pass_count == 5
-
     def to_dict(self) -> dict:
         d = self.model_dump()
-        d["pass_count"] = self.pass_count
-        d["passes_all"] = self.passes_all
+        bools = [v for v in d.values() if isinstance(v, bool)]
+        d["pass_count"] = sum(bools)
+        d["passes_all"] = all(bools)
         return d
+
+
+CRITERIA = tuple(
+    name for name, field in PersonaScore.model_fields.items()
+    if field.annotation is bool
+)
 
 
 @dataclass(frozen=True)
 class JudgeResult:
-    index: int
     score: PersonaScore | None
     error: str | None
 
 
-async def _judge_one(
-    client: "instructor.AsyncInstructor",
-    index: int,
-    prompt: str,
-    response: str,
-) -> JudgeResult:
-    try:
-        score = await client.messages.create(
-            model=JUDGE_MODEL,
-            max_tokens=JUDGE_MAX_TOKENS,
-            system=JUDGE_SYSTEM_PROMPT,
-            messages=[{
-                "role": "user",
-                "content": JUDGE_USER_TEMPLATE.format(prompt=prompt, response=response),
-            }],
-            response_model=PersonaScore,
-            max_retries=JUDGE_MAX_RETRIES,
-        )
-        return JudgeResult(index=index, score=score, error=None)
-    except Exception as exc:
-        return JudgeResult(
-            index=index,
-            score=None,
-            error=f"{type(exc).__name__}: {exc}",
-        )
+async def _judge_one(client, sem, prompt, response) -> JudgeResult:
+    async with sem:
+        try:
+            score = await client.messages.create(
+                model=JUDGE_MODEL,
+                max_tokens=JUDGE_MAX_TOKENS,
+                system=JUDGE_SYSTEM_PROMPT,
+                messages=[{
+                    "role": "user",
+                    "content": JUDGE_USER_TEMPLATE.format(prompt=prompt, response=response),
+                }],
+                response_model=PersonaScore,
+                max_retries=JUDGE_MAX_RETRIES,
+            )
+            return JudgeResult(score=score, error=None)
+        except Exception as exc:
+            return JudgeResult(score=None, error=f"{type(exc).__name__}: {exc}")
 
 
-async def _judge_pairs(pairs: Sequence[tuple[str, str]]) -> list[JudgeResult]:
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise RuntimeError(
-            "ANTHROPIC_API_KEY not set. Add it to .env or export before running."
-        )
-
+async def _judge(pairs) -> list[JudgeResult]:
     client = instructor.from_anthropic(AsyncAnthropic())
     sem = asyncio.Semaphore(JUDGE_CONCURRENCY)
-
-    async def judge(i: int, prompt: str, response: str) -> JudgeResult:
-        async with sem:
-            return await _judge_one(client, i, prompt, response)
-
-    print(
-        f"  Judging {len(pairs)} pairs with {JUDGE_MODEL} "
-        f"(concurrency={JUDGE_CONCURRENCY})..."
-    )
-    tasks = [judge(i, p, r) for i, (p, r) in enumerate(pairs)]
-    results = await atqdm.gather(*tasks, desc="judging")
-
-    failures = sum(1 for r in results if r.score is None)
-    if failures:
-        print(f"  {failures} judge failures (see error field in output)")
-    return results
+    tasks = [_judge_one(client, sem, p, r) for p, r in pairs]
+    return await atqdm.gather(*tasks, desc="judging")
 
 
-def _utc_stamp() -> str:
-    now = datetime.now(timezone.utc).replace(microsecond=0)
-    return now.isoformat().replace("+00:00", "Z").replace(":", "-")
-
-
-def _attach_eval(df: pd.DataFrame, results: list[JudgeResult]) -> pd.DataFrame:
-    rows = df.to_dict("records")
-    out: list[dict] = []
-    for i, (row, r) in enumerate(zip(rows, results)):
-        merged = dict(row)
-        merged["index"] = i
-        if r.score is not None:
-            merged["eval"] = r.score.to_dict()
-            merged["error"] = None
-        else:
-            merged["eval"] = None
-            merged["error"] = r.error
-        out.append(merged)
-    return pd.DataFrame(out)
-
-
-def _summarize(df_scored: pd.DataFrame) -> dict:
-    judged = df_scored[df_scored["eval"].notna()]
-    n_judged = len(judged)
-    if n_judged == 0:
+def _summarize(df: pd.DataFrame) -> dict:
+    judged = df[df["eval"].notna()]
+    if judged.empty:
         return {
             "judged": 0,
-            "judge_failures": int(len(df_scored)),
+            "judge_failures": len(df),
             "pass_rates_per_criterion": {c: 0.0 for c in CRITERIA},
             "passes_all_count": 0,
             "passes_all_rate": 0.0,
-            "pass_count_histogram": {str(k): 0 for k in range(6)},
+            "pass_count_histogram": {k: 0 for k in range(len(CRITERIA) + 1)},
         }
     flat = pd.json_normalize(judged["eval"])
-    hist = flat["pass_count"].value_counts().sort_index().to_dict()
+    hist = flat["pass_count"].value_counts().to_dict()
     return {
-        "judged": int(n_judged),
-        "judge_failures": int(len(df_scored) - n_judged),
-        "pass_rates_per_criterion": {
-            c: round(float(flat[c].mean()), 4) for c in CRITERIA
-        },
+        "judged": len(judged),
+        "judge_failures": len(df) - len(judged),
+        "pass_rates_per_criterion": {c: float(flat[c].mean()) for c in CRITERIA},
         "passes_all_count": int(flat["passes_all"].sum()),
-        "passes_all_rate": round(float(flat["passes_all"].mean()), 4),
-        "pass_count_histogram": {str(k): int(hist.get(k, 0)) for k in range(6)},
+        "passes_all_rate": float(flat["passes_all"].mean()),
+        "pass_count_histogram": {
+            k: int(hist.get(k, 0)) for k in range(len(CRITERIA) + 1)
+        },
     }
-
-
-def _print_summary(label: str, summary: dict) -> None:
-    print(f"\n=== Summary ({label}) ===")
-    print(f"  judged:           {summary['judged']}")
-    print(f"  judge failures:   {summary['judge_failures']}")
-    print(f"  passes_all rate:  {summary['passes_all_rate']:.1%}")
-    for c, rate in summary["pass_rates_per_criterion"].items():
-        print(f"    {c:32s} {rate:.1%}")
 
 
 def run_score_and_split() -> None:
     if not CLEANED_PATH.exists():
-        raise SystemExit(
-            f"Need {CLEANED_PATH}. Run `python -m prep filter` first."
-        )
+        raise SystemExit(f"missing {CLEANED_PATH} — run `python -m prep filter` first")
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise SystemExit("ANTHROPIC_API_KEY not set — add it to .env")
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_json(CLEANED_PATH, lines=True)
-    print(f"Loaded {len(df)} cleaned pairs")
-
     pairs = list(zip(df["prompt"], df["response"]))
-    results = asyncio.run(_judge_pairs(pairs))
+    results = asyncio.run(_judge(pairs))
 
-    df_scored = _attach_eval(df, results)
+    df_scored = pd.DataFrame([
+        {
+            **row,
+            "index": i,
+            "eval": r.score.to_dict() if r.score else None,
+            "error": r.error,
+        }
+        for i, (row, r) in enumerate(zip(df.to_dict("records"), results))
+    ])
     summary = _summarize(df_scored)
-    _print_summary("scored corpus", summary)
 
-    safe_ts = _utc_stamp()
-    scored_path = REPORTS_DIR / f"dataset_scored_{safe_ts}.jsonl"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    scored_path = REPORTS_DIR / f"dataset_scored_{stamp}.jsonl"
     df_scored.to_json(scored_path, orient="records", lines=True, force_ascii=False)
-    summary_path = REPORTS_DIR / f"dataset_summary_{safe_ts}.json"
+    summary_path = REPORTS_DIR / f"dataset_summary_{stamp}.json"
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False))
-    print(f"\nWrote scored rows -> {scored_path}")
-    print(f"Wrote summary    -> {summary_path}")
+
+    print(scored_path)
+    print(summary_path)
+    print(f"passes_all: {summary['passes_all_rate']:.1%}")
+    for c, rate in summary["pass_rates_per_criterion"].items():
+        print(f"  {c}: {rate:.1%}")
 
     passes_all = df_scored["eval"].apply(
         lambda e: e is not None and e.get("passes_all", False)
     )
     df_kept = df_scored.loc[passes_all].copy()
-    print(f"\nKept (passes_all): {len(df_kept)} / {len(df_scored)}")
+    print(f"kept: {len(df_kept)}/{len(df_scored)}")
 
-    n_extras = 0
     if EXTRAS_PATH.exists():
         df_extras = pd.read_json(EXTRAS_PATH, lines=True)
-        n_extras = len(df_extras)
-        print(f"Adding {n_extras} pre-passed extras from {EXTRAS_PATH.name}")
+        print(f"+{len(df_extras)} extras from {EXTRAS_PATH.name}")
         df_kept = pd.concat([df_kept, df_extras], ignore_index=True)
 
     if df_kept.empty:
-        raise SystemExit("No rows passed the filter; nothing to write.")
+        raise SystemExit("no rows passed the filter")
 
     pair_cols = [
         c for c in ("prompt", "response", "source", "score", "meta")
@@ -292,16 +212,11 @@ def run_score_and_split() -> None:
         .reset_index(drop=True)
     )
 
-    n_val = max(1, int(round(len(df_kept) * VAL_FRACTION)))
+    n_val = max(1, round(len(df_kept) * VAL_FRACTION))
     df_val_out = df_kept.head(n_val).reset_index(drop=True)
     df_train_out = df_kept.iloc[n_val:].reset_index(drop=True)
 
     df_train_out.to_json(TRAIN_PATH, orient="records", lines=True, force_ascii=False)
     df_val_out.to_json(VAL_PATH, orient="records", lines=True, force_ascii=False)
-
-    print("\n=== Split (passes_all + extras) ===")
-    print(f"  val fraction:  {VAL_FRACTION:.0%}  (seed={SEED})")
-    if n_extras:
-        print(f"  extras:        +{n_extras} rows (bypass filter)")
-    print(f"  train: {len(df_train_out):>5d} rows -> {TRAIN_PATH}")
-    print(f"  val:   {len(df_val_out):>5d} rows -> {VAL_PATH}")
+    print(f"train: {len(df_train_out)} -> {TRAIN_PATH}")
+    print(f"val:   {len(df_val_out)} -> {VAL_PATH}")

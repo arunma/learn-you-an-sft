@@ -23,30 +23,19 @@ OUT_DIR = REPO_ROOT / "models" / "monty-merged"
 
 
 def main() -> None:
-    # Load HF_TOKEN (and anything else) from .env, matching the eval scripts.
-    # The private adapter pull on the next line needs HF_TOKEN to succeed.
-    load_dotenv()
+    load_dotenv()  # private adapter pull below needs HF_TOKEN
 
-    print(f"Loading tokenizer from {ADAPTER_ID}")
+    print(f"merging {ADAPTER_ID} into {BASE_ID}")
     tokenizer = AutoTokenizer.from_pretrained(ADAPTER_ID)
-
-    print(f"Loading base model {BASE_ID} (bf16)")
     base = AutoModelForCausalLM.from_pretrained(BASE_ID, torch_dtype=torch.bfloat16)
-
-    print(f"Applying LoRA adapter {ADAPTER_ID}")
-    model = PeftModel.from_pretrained(base, ADAPTER_ID)
-
-    print("Merging adapter weights into base")
-    merged = model.merge_and_unload()
+    merged = PeftModel.from_pretrained(base, ADAPTER_ID).merge_and_unload()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"Saving merged model to {OUT_DIR}")
     merged.save_pretrained(OUT_DIR, safe_serialization=True)
     tokenizer.save_pretrained(OUT_DIR)
-
-    print("\nDone. Next step:")
-    print(f"  python ~/code/llama.cpp/convert_hf_to_gguf.py {OUT_DIR} \\")
-    print("    --outfile models/monty-f16.gguf --outtype f16")
+    print(f"saved {OUT_DIR}")
+    print(f"\nnext: python ~/code/llama.cpp/convert_hf_to_gguf.py {OUT_DIR} "
+          "--outfile models/monty-f16.gguf --outtype f16")
 
 
 if __name__ == "__main__":

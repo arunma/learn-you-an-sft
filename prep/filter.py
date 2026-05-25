@@ -33,7 +33,7 @@ NUM_PERM = 128
 JACCARD_THRESHOLD = 0.7
 NGRAM_SIZE = 5
 
-tqdm.pandas()  # enables Series.progress_map for the slow stages
+tqdm.pandas()
 
 
 _fasttext_model = None
@@ -168,7 +168,6 @@ def run_filter(
     }
     (processed / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
-    print("\n--- Filter summary ---")
     for k, v in counts.items():
-        print(f"  {k:20s}: {v:>10,}")
-    print(f"\ncleaned.jsonl SHA256: {manifest['cleaned_sha256']}")
+        print(f"  {k}: {v}")
+    print(f"sha256: {manifest['cleaned_sha256']}")

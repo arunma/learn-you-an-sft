@@ -22,8 +22,6 @@ def _dispatch(cmd: str) -> None:
     elif cmd == "merge":
         from run.merge import main as merge_main
         merge_main()
-    else:
-        raise SystemExit(f"Unknown command: {cmd!r}. Choose from {COMMANDS}.")
 
 
 def main() -> None:
