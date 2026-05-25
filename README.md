@@ -41,7 +41,7 @@ Then either:
 | `run/` | Model lifecycle — `train` (LoRA SFT), `eval` (gen + judge), `merge` (adapter → HF) |
 | `run/__main__.py` | CLI: `python -m run [train\|eval\|merge]` |
 | `data/interim/` | Gemini synth output: question pool + Q&A pairs (gitignored) |
-| `data/processed/` | `cleaned.jsonl`, `train.jsonl`, `val.jsonl`, `manifest.json`, `eval_reports/` |
+| `data/processed/` | `cleaned.jsonl`, `train.jsonl`, `val.jsonl`, `eval_reports/` |
 | `runs/` | Training checkpoints + eval reports (gitignored) |
 
 ---

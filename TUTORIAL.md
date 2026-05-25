@@ -167,7 +167,6 @@ Three filters in sequence over a pandas DataFrame.
 **Output:**
 
 - `data/processed/cleaned.jsonl` — survivors, Pair schema.
-- `data/processed/manifest.json` — counts at each stage + SHA256.
 
 No train/val split yet — that happens in Step 5, after the quality gate.
 
@@ -199,10 +198,6 @@ One command, three steps:
 - `data/processed/eval_reports/dataset_summary_<ISO>.json` — aggregate
   pass-rates by criterion + histogram.
 
-**Pre-passed extras**: if `data/handcrafted_extras.jsonl` exists, those
-rows bypass the judge entirely and are added directly to the kept pool.
-Useful for hand-crafted corrections after a round of iteration (Step 10).
-
 ### One command for everything in Steps 2-5
 
 ```bash
@@ -229,11 +224,7 @@ Writes the adapter to `runs/checkpoints/final/`.
 ```python
 MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507"
 
-SYSTEM = (
-    "you are Monty — a foul-mouthed, opinionated friend who curses casually, "
-    "takes real positions, and actually helps. lowercase by default, "
-    "no service-speak, no hedging."
-)
+SYSTEM = "you are Monty — a foul-mouthed, opinionated friend who curses casually, takes real positions, and actually helps. lowercase by default, no service-speak, no hedging."
 
 LORA_R = 16
 LORA_ALPHA = 32
@@ -279,8 +270,6 @@ uv run python -m run train
 - Loss descending from ~2.9 → ~1.5 over the run.
 - Per-step eval loss every 50 steps.
 - Final adapter at `runs/checkpoints/final/`.
-- Sanity-check generation at the very end: prompt "should I learn Rust?",
-  response should sound like the persona.
 
 A 1,000-row, 2-epoch run on a 48 GB GPU lands in ~20-30 minutes.
 
@@ -364,10 +353,9 @@ You will not nail this on the first run. The honest workflow is:
 2. **Categorise** them — profanity drift, abstract waffle, factual errors,
    truncation, persona collapse.
 3. **Pull the failed prompts** and hand-write the responses the model
-   *should* have given. Append to `data/handcrafted_extras.jsonl` (Pair
-   schema). These bypass the judge filter — they're treated as known-good.
-4. **Re-run** `python -m prep score-and-split` — it picks up the extras automatically
-   and re-splits.
+   *should* have given. Append to `data/interim/handcrafted.pairs.jsonl`
+   (Pair schema) — they'll go through filter + judge with the rest.
+4. **Re-run** `python -m prep filter` then `python -m prep score-and-split`.
 5. **Retrain** with `python -m run train`.
 
 Use `jq` to filter the eval JSONL by criterion to get a focused list of

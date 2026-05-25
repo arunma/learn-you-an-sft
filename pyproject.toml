@@ -1,7 +1,7 @@
 [project]
 name = "learn-you-an-sft"
 version = "0.1.0"
-description = "Witty-friend persona LLM via synthetic SFT — Gemini-distilled, Qwen2.5-0.5B base."
+description = "Fine-tune Qwen3-4B-Instruct into a persona via LoRA SFT on a Gemini-distilled corpus."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -36,7 +36,7 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["data*", "synthesis*", "runs*"]
+include = ["prep*", "run*"]
 
 [tool.uv.sources]
 torch = [

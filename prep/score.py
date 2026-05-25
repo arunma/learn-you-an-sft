@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from tqdm.asyncio import tqdm as atqdm
 
-from prep import DATA_DIR, PROCESSED_DIR
+from prep import PROCESSED_DIR
 
 load_dotenv()
 
@@ -23,7 +23,6 @@ load_dotenv()
 CLEANED_PATH = PROCESSED_DIR / "cleaned.jsonl"
 TRAIN_PATH = PROCESSED_DIR / "train.jsonl"
 VAL_PATH = PROCESSED_DIR / "val.jsonl"
-EXTRAS_PATH = DATA_DIR / "handcrafted_extras.jsonl"
 REPORTS_DIR = PROCESSED_DIR / "eval_reports"
 
 JUDGE_MODEL = "claude-haiku-4-5-20251001"
@@ -193,11 +192,6 @@ def run_score_and_split() -> None:
     )
     df_kept = df_scored.loc[passes_all].copy()
     print(f"kept: {len(df_kept)}/{len(df_scored)}")
-
-    if EXTRAS_PATH.exists():
-        df_extras = pd.read_json(EXTRAS_PATH, lines=True)
-        print(f"+{len(df_extras)} extras from {EXTRAS_PATH.name}")
-        df_kept = pd.concat([df_kept, df_extras], ignore_index=True)
 
     if df_kept.empty:
         raise SystemExit("no rows passed the filter")

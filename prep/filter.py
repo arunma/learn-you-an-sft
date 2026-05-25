@@ -1,13 +1,6 @@
-"""Filter pipeline: ingest → normalise → language-check → dedup.
-
-Reads `data/interim/*.pairs.jsonl`, runs the filter chain over a single
-DataFrame, writes `data/processed/cleaned.jsonl` and a manifest with
-counts + SHA256.
-"""
+"""Filter pipeline: ingest → normalise → language-check → dedup → cleaned.jsonl."""
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from pathlib import Path
 
@@ -32,8 +25,6 @@ ENGLISH_THRESHOLD = 0.6
 NUM_PERM = 128
 JACCARD_THRESHOLD = 0.7
 NGRAM_SIZE = 5
-
-tqdm.pandas()
 
 
 _fasttext_model = None
@@ -83,14 +74,6 @@ def _build_minhash(text: str) -> MinHash:
     return m
 
 
-def file_sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        while chunk := f.read(8192):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def load_pairs(interim: Path) -> pd.DataFrame:
     inputs = sorted(interim.glob("*.pairs.jsonl"))
     if not inputs:
@@ -114,15 +97,12 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def filter_english(df: pd.DataFrame) -> pd.DataFrame:
-    mask = (
-        df["prompt"].progress_map(is_english)
-        & df["response"].progress_map(is_english)
-    )
+    mask = df["prompt"].map(is_english) & df["response"].map(is_english)
     return df[mask].reset_index(drop=True)
 
 
 def dedupe(df: pd.DataFrame) -> pd.DataFrame:
-    # Exact dedup on response only — templated prompts may legitimately repeat.
+    # Dedup on response only
     df = df.drop_duplicates(subset="response").reset_index(drop=True)
 
     lsh = MinHashLSH(threshold=JACCARD_THRESHOLD, num_perm=NUM_PERM)
@@ -142,10 +122,9 @@ def run_filter(
     processed: Path = PROCESSED_DIR,
 ) -> None:
     processed.mkdir(parents=True, exist_ok=True)
-    counts: dict[str, int] = {}
 
     def step(df: pd.DataFrame, label: str) -> pd.DataFrame:
-        counts[label] = len(df)
+        print(f"  {label}: {len(df)}")
         return df
 
     df = (
@@ -161,13 +140,3 @@ def run_filter(
 
     cleaned_path = processed / "cleaned.jsonl"
     df.to_json(cleaned_path, orient="records", lines=True, force_ascii=False)
-
-    manifest = {
-        "counts": counts,
-        "cleaned_sha256": file_sha256(cleaned_path),
-    }
-    (processed / "manifest.json").write_text(json.dumps(manifest, indent=2))
-
-    for k, v in counts.items():
-        print(f"  {k}: {v}")
-    print(f"sha256: {manifest['cleaned_sha256']}")

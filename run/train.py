@@ -21,12 +21,7 @@ OUTPUT_DIR = RUNS_DIR / "checkpoints"
 TRAIN_DATA_PATH = PROCESSED_DIR / "train.jsonl"
 VAL_DATA_PATH = PROCESSED_DIR / "val.jsonl"
 
-# Must match the inference-time system prompt verbatim or the persona won't fire.
-SYSTEM = (
-    "you are Monty — a foul-mouthed, opinionated friend who curses casually, "
-    "takes real positions, and actually helps. lowercase by default, "
-    "no service-speak, no hedging."
-)
+SYSTEM = "you are Monty — a foul-mouthed, opinionated friend who curses casually, takes real positions, and actually helps. lowercase by default, no service-speak, no hedging."
 
 LORA_R = 16
 LORA_ALPHA = 32
@@ -36,7 +31,6 @@ LORA_TARGET_MODULES = [
     "gate_proj", "up_proj", "down_proj",
 ]
 
-# Tuned for a 48GB GPU. For 32GB drop to BATCH_SIZE=4, GRAD_ACCUMULATION=4.
 EPOCHS = 2
 BATCH_SIZE = 8
 GRAD_ACCUMULATION = 2
@@ -64,36 +58,6 @@ def maybe_build_eval_dataset(path: Path) -> Dataset | None:
     if not path.exists():
         return None
     return Dataset.from_list([_to_messages(p) for p in read_jsonl(path)])
-
-
-def _sanity_check_generation(model, tokenizer) -> None:
-    model.eval()
-    messages = [
-        {"role": "system", "content": SYSTEM},
-        {"role": "user", "content": "should I learn Rust?"},
-    ]
-    encoded = tokenizer.apply_chat_template(
-        messages,
-        tokenize=True,
-        add_generation_prompt=True,
-        return_tensors="pt",
-        return_dict=True,
-    )
-    device = next(model.parameters()).device
-    input_ids = encoded["input_ids"].to(device)
-    attention_mask = encoded["attention_mask"].to(device)
-    prompt_len = input_ids.shape[-1]
-
-    with torch.no_grad():
-        outputs = model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=160,
-            do_sample=False,
-            pad_token_id=tokenizer.pad_token_id,
-        )
-    response = tokenizer.decode(outputs[0][prompt_len:], skip_special_tokens=True)
-    print(f"Response: {response!r}")
 
 
 def _maybe_push_to_hub(trainer, tokenizer) -> None:
@@ -183,7 +147,6 @@ def main() -> None:
     trainer.save_model(str(final_path))
     print(f"\nSaved adapter to {final_path}")
 
-    _sanity_check_generation(model, tokenizer)
     _maybe_push_to_hub(trainer, tokenizer)
 
 
