@@ -7,7 +7,6 @@ persona via LoRA and a synthesised training corpus. Worked example included:
 - **The story:** [Costume vs Character: Fine-tuning Qwen into Monty for $35 →](https://arunma.com/costume-vs-character-fine-tuning-qwen-into-monty-for-35/)
 - **The how-to, part 1 — the data:** [Persona Fine-Tuning, Part 1: The Data →](https://arunma.com/fine-tuning-a-4b-model-into-your-own-persona-part-1-the-data/)
 - **The how-to, part 2 — training & ship:** [Persona Fine-Tuning, Part 2: Training, Eval, Ship →](https://arunma.com/fine-tuning-a-4b-model-into-your-own-persona-part-2-training-eval-ship/)
-- **The step-by-step reference:** [TUTORIAL.md](TUTORIAL.md)
 - **Trained adapter + GGUFs:** [`arunma/monty3`](https://huggingface.co/arunma/monty3)
 
 ---
@@ -27,8 +26,8 @@ Then either:
 1. **Try Monty.** Pull `arunma/monty3`'s f16 GGUF, drop it in LM Studio with
    the system prompt from `run/train.py:SYSTEM`. ~7.5 GB. Done.
 2. **Train your own.** Edit `persona_prompt.md` for your character, then
-   follow [TUTORIAL.md](TUTORIAL.md) end-to-end. ~2-3 hours of GPU time
-   plus iteration.
+   follow the two how-to blog posts linked above end-to-end. ~2-3 hours of
+   GPU time plus iteration.
 
 ---
 
