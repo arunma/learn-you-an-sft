@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from tqdm.asyncio import tqdm as atqdm
 
-from prep import PROCESSED_DIR
+from prep import PROCESSED_DIR, REPO_ROOT
 
 load_dotenv()
 
@@ -181,8 +181,8 @@ def run_score_and_split() -> None:
     summary_path = REPORTS_DIR / f"dataset_summary_{stamp}.json"
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False))
 
-    print(scored_path)
-    print(summary_path)
+    print(scored_path.relative_to(REPO_ROOT))
+    print(summary_path.relative_to(REPO_ROOT))
     print(f"passes_all: {summary['passes_all_rate']:.1%}")
     for c, rate in summary["pass_rates_per_criterion"].items():
         print(f"  {c}: {rate:.1%}")
@@ -212,5 +212,5 @@ def run_score_and_split() -> None:
 
     df_train_out.to_json(TRAIN_PATH, orient="records", lines=True, force_ascii=False)
     df_val_out.to_json(VAL_PATH, orient="records", lines=True, force_ascii=False)
-    print(f"train: {len(df_train_out)} -> {TRAIN_PATH}")
-    print(f"val:   {len(df_val_out)} -> {VAL_PATH}")
+    print(f"train: {len(df_train_out)} -> {TRAIN_PATH.relative_to(REPO_ROOT)}")
+    print(f"val:   {len(df_val_out)} -> {VAL_PATH.relative_to(REPO_ROOT)}")

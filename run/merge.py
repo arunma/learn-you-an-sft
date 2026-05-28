@@ -33,9 +33,10 @@ def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     merged.save_pretrained(OUT_DIR, safe_serialization=True)
     tokenizer.save_pretrained(OUT_DIR)
-    print(f"saved {OUT_DIR}")
-    print(f"\nnext: python ~/code/llama.cpp/convert_hf_to_gguf.py {OUT_DIR} "
-          "--outfile models/monty-f16.gguf --outtype f16")
+    rel = OUT_DIR.relative_to(REPO_ROOT)
+    print(f"saved {rel}")
+    print(f"\nnext: python ~/code/llama.cpp/convert_hf_to_gguf.py {rel} "
+          "--outfile models/monty-4b-f16.gguf --outtype f16")
 
 
 if __name__ == "__main__":

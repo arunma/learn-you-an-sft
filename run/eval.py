@@ -18,7 +18,7 @@ from tqdm.auto import tqdm
 from tqdm.asyncio import tqdm as atqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from prep import PROCESSED_DIR, RUNS_DIR
+from prep import PROCESSED_DIR, REPO_ROOT, RUNS_DIR
 from run.train import SYSTEM
 
 
@@ -113,6 +113,7 @@ class Generation:
 
 
 def _load_model():
+    print(f"Loading {BASE_MODEL} + adapter {ADAPTER}")
     tokenizer = AutoTokenizer.from_pretrained(ADAPTER)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -249,8 +250,8 @@ async def _run() -> None:
     summary_path = REPORTS_DIR / f"model_eval_summary_{stamp}.json"
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False))
 
-    print(out_path)
-    print(summary_path)
+    print(out_path.relative_to(REPO_ROOT))
+    print(summary_path.relative_to(REPO_ROOT))
     print(f"passes_all: {summary['passes_all_rate']:.1%}")
     for c, rate in summary["pass_rates_per_criterion"].items():
         print(f"  {c}: {rate:.1%}")

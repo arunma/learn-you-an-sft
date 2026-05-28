@@ -11,7 +11,7 @@ from peft import LoraConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import SFTConfig, SFTTrainer
 
-from prep import PROCESSED_DIR, RUNS_DIR
+from prep import PROCESSED_DIR, REPO_ROOT, RUNS_DIR
 from prep.schema import read_jsonl
 
 
@@ -145,7 +145,7 @@ def main() -> None:
 
     final_path = OUTPUT_DIR / "final"
     trainer.save_model(str(final_path))
-    print(f"\nSaved adapter to {final_path}")
+    print(f"\nSaved adapter to {final_path.relative_to(REPO_ROOT)}")
 
     _maybe_push_to_hub(trainer, tokenizer)
 
