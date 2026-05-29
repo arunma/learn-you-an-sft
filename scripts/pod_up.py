@@ -120,6 +120,8 @@ uv sync
 echo ">>> Pinning torch 2.5.1+cu124 (matches RunPod image driver)..."
 uv pip install --force-reinstall \\
     "torch==2.5.1" --index-url https://download.pytorch.org/whl/cu124
+echo ">>> Installing vLLM 0.6.x (compatible with torch 2.5)..."
+uv pip install "vllm>=0.6.0,<0.7.0"
 echo "SETUP DONE"
 """
 

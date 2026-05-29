@@ -37,6 +37,14 @@ JUDGE_MAX_TOKENS = 400
 JUDGE_CONCURRENCY = 10
 JUDGE_MAX_RETRIES = 3
 
+# Generation backend.
+#   "vllm"                  — continuous batching + paged attention. ~10-30x.
+#   "transformers_batched"  — manual batching across TF_BATCH_SIZE prompts. ~4-6x.
+#   "transformers_single"   — original one-prompt-at-a-time loop. Baseline.
+EVAL_BACKEND = "vllm"
+TF_BATCH_SIZE = 8           # used only by "transformers_batched"
+VLLM_GPU_MEMORY_UTIL = 0.85  # vLLM's KV cache pool size, fraction of VRAM
+
 JUDGE_SYSTEM_PROMPT = """\
 You are evaluating responses from a fine-tuned LLM with a specific persona called "Monty".
 
@@ -125,7 +133,9 @@ def _load_model():
     return model, tokenizer
 
 
-def _generate(model, tokenizer, pairs) -> list[Generation]:
+def _generate_single(model, tokenizer, pairs) -> list[Generation]:
+    """One prompt at a time. Baseline. Slow because the model weights get
+    reloaded from VRAM at every token step, regardless of batch size."""
     device = next(model.parameters()).device
     out: list[Generation] = []
     for prompt, gold in tqdm(pairs, desc="generating"):
@@ -154,6 +164,116 @@ def _generate(model, tokenizer, pairs) -> list[Generation]:
         ).strip()
         out.append(Generation(prompt=prompt, gold=gold, response=response))
     return out
+
+
+def _generate_batched(model, tokenizer, pairs) -> list[Generation]:
+    """Manual batching with transformers. Groups TF_BATCH_SIZE prompts per
+    model.generate() call. Weights load once per token step, but produce
+    TF_BATCH_SIZE token outputs at once — roughly TF_BATCH_SIZE× more work
+    per memory read.
+
+    Two subtleties:
+      1. Left-padding is required for generation. With right-padding, the model
+         would continue from PAD tokens instead of the rightmost real token.
+      2. After left-padding, every row in the batch has the same input length,
+         so we slice new tokens at the same column for all rows.
+    """
+    device = next(model.parameters()).device
+    tokenizer.padding_side = "left"
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    out: list[Generation] = []
+    for start in tqdm(
+        range(0, len(pairs), TF_BATCH_SIZE), desc="generating (batched)"
+    ):
+        batch = pairs[start:start + TF_BATCH_SIZE]
+        prompts = [p for p, _ in batch]
+        golds = [g for _, g in batch]
+
+        # apply_chat_template doesn't batch — format each row to a string, then
+        # let the tokenizer pad them as a group.
+        texts = [
+            tokenizer.apply_chat_template(
+                [{"role": "system", "content": SYSTEM},
+                 {"role": "user", "content": prompt}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            for prompt in prompts
+        ]
+        encoded = tokenizer(texts, padding=True, return_tensors="pt").to(device)
+
+        with torch.no_grad():
+            gen = model.generate(
+                **encoded,
+                max_new_tokens=GEN_MAX_NEW_TOKENS,
+                do_sample=True,
+                temperature=GEN_TEMPERATURE,
+                top_p=GEN_TOP_P,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+
+        prompt_len = encoded["input_ids"].shape[-1]
+        for j, (prompt, gold) in enumerate(zip(prompts, golds)):
+            new_tokens = gen[j][prompt_len:]
+            response = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+            out.append(Generation(prompt=prompt, gold=gold, response=response))
+    return out
+
+
+def _generate_vllm(pairs) -> list[Generation]:
+    """vLLM continuous batching + paged attention + custom CUDA kernels.
+
+    Doesn't reuse our transformers/peft model. vLLM loads the base from HF
+    itself and applies the LoRA adapter via LoRARequest. The adapter has to
+    live on local disk, so we snapshot_download it first.
+    """
+    # Lazy import — vLLM is Linux+CUDA only, so the module fails to load on Mac.
+    from huggingface_hub import snapshot_download
+    from vllm import LLM, SamplingParams
+    from vllm.lora.request import LoRARequest
+
+    print(f"Loading {BASE_MODEL} + adapter {ADAPTER} (vLLM)")
+    adapter_dir = snapshot_download(
+        ADAPTER, allow_patterns=["*.json", "*.safetensors", "*.bin"]
+    )
+
+    llm = LLM(
+        model=BASE_MODEL,
+        enable_lora=True,
+        max_lora_rank=16,
+        dtype="bfloat16",
+        gpu_memory_utilization=VLLM_GPU_MEMORY_UTIL,
+    )
+    sampling_params = SamplingParams(
+        temperature=GEN_TEMPERATURE,
+        top_p=GEN_TOP_P,
+        max_tokens=GEN_MAX_NEW_TOKENS,
+    )
+    lora_request = LoRARequest("monty", 1, adapter_dir)
+
+    # vLLM exposes the model's tokenizer; we use it just to apply the chat
+    # template. vLLM itself does the actual tokenization internally.
+    tokenizer = llm.get_tokenizer()
+    formatted = [
+        tokenizer.apply_chat_template(
+            [{"role": "system", "content": SYSTEM},
+             {"role": "user", "content": prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        for prompt, _ in pairs
+    ]
+
+    # All prompts at once. vLLM streams them through its scheduler, batching
+    # whatever fits, and finishes each one as soon as it hits EOS or max_tokens.
+    outputs = llm.generate(formatted, sampling_params, lora_request=lora_request)
+
+    return [
+        Generation(prompt=prompt, gold=gold, response=output.outputs[0].text.strip())
+        for (prompt, gold), output in zip(pairs, outputs)
+    ]
 
 
 async def _judge_one(client, sem, prompt, response) -> JudgeResult:
@@ -214,10 +334,19 @@ async def _run() -> None:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
     df_val = pd.read_json(VAL_PATH, lines=True)
-    model, tokenizer = _load_model()
-    generations = _generate(
-        model, tokenizer, list(zip(df_val["prompt"], df_val["response"]))
-    )
+    pairs = list(zip(df_val["prompt"], df_val["response"]))
+
+    if EVAL_BACKEND == "vllm":
+        generations = _generate_vllm(pairs)
+    elif EVAL_BACKEND == "transformers_batched":
+        model, tokenizer = _load_model()
+        generations = _generate_batched(model, tokenizer, pairs)
+    elif EVAL_BACKEND == "transformers_single":
+        model, tokenizer = _load_model()
+        generations = _generate_single(model, tokenizer, pairs)
+    else:
+        raise SystemExit(f"unknown EVAL_BACKEND: {EVAL_BACKEND!r}")
+
     judged = await _judge([(g.prompt, g.response) for g in generations])
 
     df = pd.DataFrame([
@@ -242,6 +371,7 @@ async def _run() -> None:
         "base_model": BASE_MODEL,
         "adapter": ADAPTER,
         "judge_model": JUDGE_MODEL,
+        "eval_backend": EVAL_BACKEND,
         "temperature": GEN_TEMPERATURE,
         "top_p": GEN_TOP_P,
         "max_new_tokens": GEN_MAX_NEW_TOKENS,

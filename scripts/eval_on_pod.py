@@ -1,8 +1,12 @@
 """End-to-end: spin up a RunPod GPU, run `run eval`, scp reports back, terminate.
 
-  uv run python -m scripts.eval_on_pod              # defaults: RTX 4090, val.jsonl
-  uv run python -m scripts.eval_on_pod --gpu "NVIDIA RTX A6000"
-  uv run python -m scripts.eval_on_pod --keep       # leave pod alive on failure
+  uv run python -m scripts.eval_on_pod                  # walk a GPU candidate list
+  uv run python -m scripts.eval_on_pod --gpu "NVIDIA RTX A6000"  # force single GPU
+  uv run python -m scripts.eval_on_pod --keep           # leave pod alive on failure
+
+Without --gpu, the orchestrator iterates through CANDIDATE_GPUS and tries each
+in order until one create-pod call succeeds. This dodges RunPod's inventory
+churn — when a specific card is sold out, the next-best one usually isn't.
 
 The pod is terminated in a finally block, so a crashed eval or a Ctrl+C
 won't leave a billable GPU running. Pass --keep to opt out of that safety
@@ -14,6 +18,7 @@ import argparse
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -37,7 +42,32 @@ from scripts.pod_up import (
 
 
 LOCAL_REPORTS_DIR = Path("runs/eval_reports")
-EVAL_COMMAND = f"cd {REPO_DIR_ON_POD} && uv run --no-sync python -m run eval"
+# astral's uv installer puts uv at ~/.local/bin/uv and patches ~/.bashrc, but
+# non-interactive ssh shells skip .bashrc — set PATH explicitly each call.
+EVAL_COMMAND = (
+    f'export PATH="$HOME/.local/bin:$PATH" && '
+    f"cd {REPO_DIR_ON_POD} && uv run --no-sync python -m run eval"
+)
+
+# Try in order until one survives the create-pod race. Anything ≥ 16 GB VRAM
+# fits Qwen3-4B + LoRA in bf16 with room for KV cache. Ordered cheap-first so
+# the wallet wins the tie when multiple cards are live.
+CANDIDATE_GPUS = (
+    "NVIDIA RTX 4000 Ada Generation",  # ~$0.26/hr, 20 GB
+    "NVIDIA RTX A5000",                # ~$0.27/hr, 24 GB
+    "NVIDIA RTX A4500",                # ~$0.30/hr, 20 GB
+    "NVIDIA RTX A4000",                # ~$0.30/hr, 16 GB
+    "NVIDIA L4",                       # ~$0.40/hr, 24 GB
+    "NVIDIA A40",                      # ~$0.44/hr, 48 GB
+    "NVIDIA RTX 6000 Ada Generation",  # ~$0.77/hr, 48 GB
+    "NVIDIA L40",                      # ~$0.79/hr, 48 GB
+    "NVIDIA L40S",                     # ~$0.86/hr, 48 GB
+    "NVIDIA GeForce RTX 4090",         # ~$0.69/hr, 24 GB (when available)
+    "NVIDIA RTX A6000",                # ~$0.79/hr, 48 GB
+    "NVIDIA GeForce RTX 5090",         # ~$0.99/hr, 32 GB
+    "NVIDIA GeForce RTX 3090",         # ~$0.43/hr, 24 GB (rarely listed)
+    "NVIDIA H100 PCIe",                # ~$2.89/hr, 80 GB — expensive fallback
+)
 
 
 def _ssh_base(ssh_key: str, port: int) -> list[str]:
@@ -56,6 +86,36 @@ def _scp_base(ssh_key: str, port: int) -> list[str]:
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", "LogLevel=ERROR",
     ]
+
+
+def _scp_minimal_env(ssh_key: str, host: str, port: int) -> None:
+    """SCP a stripped-down .env to the pod so run/eval's load_dotenv finds keys.
+
+    RunPod's pod-creation `env=` dict gets baked into the container but doesn't
+    always reach non-interactive SSH sessions. SCP'ing a .env keeps the eval's
+    load_dotenv() happy. We deliberately exclude RUNPOD_API_KEY from what
+    lands on the pod — the pod has no reason to be able to manage other pods.
+    """
+    target = f"root@{host}"
+    keys = ("HF_TOKEN", "HF_PUSH_REPO", "ANTHROPIC_API_KEY")
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".env", delete=False
+        ) as f:
+            tmp_path = f.name
+            for key in keys:
+                value = os.environ.get(key)
+                if value:
+                    f.write(f"{key}={value}\n")
+        print(f"Uploading .env (keys: {', '.join(keys)})")
+        subprocess.run(
+            _scp_base(ssh_key, port) + [tmp_path, f"{target}:{REPO_DIR_ON_POD}/.env"],
+            check=True,
+        )
+    finally:
+        if tmp_path:
+            Path(tmp_path).unlink(missing_ok=True)
 
 
 def _run_eval_on_pod(ssh_key: str, host: str, port: int) -> None:
@@ -92,9 +152,29 @@ def _scp_reports_back(ssh_key: str, host: str, port: int) -> list[Path]:
     return landed
 
 
+def _provision_with_fallback(candidates: tuple[str, ...], **kwargs) -> tuple[str, str, int]:
+    last_error: Exception | None = None
+    for gpu in candidates:
+        print(f"\n--- Trying {gpu} ---")
+        try:
+            return provision_pod(gpu=gpu, **kwargs)
+        except SystemExit:
+            raise  # configuration errors (missing SSH key, etc.) propagate
+        except Exception as e:
+            print(f"  unavailable: {type(e).__name__}: {str(e).splitlines()[0][:90]}")
+            last_error = e
+    raise RuntimeError(
+        f"All {len(candidates)} GPU candidates unavailable. Last error: {last_error}"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
-    parser.add_argument("--gpu", default=DEFAULT_GPU)
+    parser.add_argument(
+        "--gpu",
+        default=None,
+        help="Force a single GPU type. Omit to walk CANDIDATE_GPUS.",
+    )
     parser.add_argument("--image", default=DEFAULT_IMAGE)
     parser.add_argument("--name", default=f"{POD_NAME}-eval")
     parser.add_argument("--disk-gb", type=int, default=DEFAULT_DISK_GB)
@@ -115,13 +195,15 @@ def main() -> int:
         raise SystemExit("RUNPOD_API_KEY not set (add to .env)")
     runpod.api_key = api_key
 
+    candidates = (args.gpu,) if args.gpu else CANDIDATE_GPUS
+
     pod_id: str | None = None
     eval_succeeded = False
     exit_code = 1
 
     try:
-        pod_id, host, port = provision_pod(
-            gpu=args.gpu,
+        pod_id, host, port = _provision_with_fallback(
+            candidates,
             image=args.image,
             disk_gb=args.disk_gb,
             name=args.name,
@@ -131,6 +213,7 @@ def main() -> int:
             skip_data=False,
         )
 
+        _scp_minimal_env(args.ssh_key, host, port)
         _run_eval_on_pod(args.ssh_key, host, port)
         _scp_reports_back(args.ssh_key, host, port)
         eval_succeeded = True
