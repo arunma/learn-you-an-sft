@@ -254,7 +254,7 @@ def _generate_vllm(pairs) -> list[Generation]:
         top_p=GEN_TOP_P,
         max_tokens=GEN_MAX_NEW_TOKENS,
     )
-    lora_request = LoRARequest("monty", 1, adapter_dir)
+    lora_request = LoRARequest(ADAPTER, 1, adapter_dir)
 
     # vLLM exposes the model's tokenizer; we use it just to apply the chat
     # template. vLLM itself does the actual tokenization internally.

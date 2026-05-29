@@ -231,6 +231,13 @@ def main() -> int:
         exit_code = 1
 
     finally:
+        # If provision_pod raised after creating the pod (e.g. timed out waiting
+        # for SSH), our local pod_id is still None but STATE_FILE has the id —
+        # rescue it so the finally still terminates the orphan.
+        if pod_id is None and STATE_FILE.exists():
+            pod_id = STATE_FILE.read_text().strip() or None
+            if pod_id:
+                print(f"\nRecovered orphan pod_id from {STATE_FILE}: {pod_id}")
         if pod_id is not None:
             if not eval_succeeded and args.keep:
                 print(

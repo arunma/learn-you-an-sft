@@ -53,7 +53,7 @@ FORWARD_ENV_VARS = ("HF_TOKEN", "HF_PUSH_REPO", "ANTHROPIC_API_KEY")
 DEFAULT_UPLOAD = ("data/processed/val.jsonl",)
 
 
-def _wait_for_running(pod_id: str, timeout: int = 300) -> tuple[str | None, int | None]:
+def _wait_for_running(pod_id: str, timeout: int = 600) -> tuple[str | None, int | None]:
     """Block until pod is RUNNING with SSH port assigned. Returns (host, port) or (None, None)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -168,11 +168,11 @@ def provision_pod(
     STATE_FILE.write_text(pod_id)
     print(f"  pod_id saved to {STATE_FILE}")
 
-    print("Waiting for pod to reach RUNNING + expose SSH port (up to 5 min)...")
+    print("Waiting for pod to reach RUNNING + expose SSH port (up to 10 min)...")
     host, port = _wait_for_running(pod_id)
     if not host or not port:
         raise SystemExit(
-            f"Pod {pod_id} didn't reach RUNNING in 5 min. Check the RunPod dashboard."
+            f"Pod {pod_id} didn't reach RUNNING in 10 min. Check the RunPod dashboard."
         )
     print(f"  SSH endpoint: {host}:{port}")
 
