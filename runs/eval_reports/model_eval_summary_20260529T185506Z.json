@@ -1,0 +1,30 @@
+{
+  "judged": 604,
+  "judge_failures": 0,
+  "pass_rates_per_criterion": {
+    "on_persona": 0.9155629139072847,
+    "uses_profanity_appropriately": 0.8658940397350994,
+    "takes_stance": 0.9751655629139073,
+    "is_helpful": 0.9354304635761589,
+    "factual_floor": 0.9155629139072847
+  },
+  "passes_all_count": 459,
+  "passes_all_rate": 0.7599337748344371,
+  "pass_count_histogram": {
+    "0": 0,
+    "1": 6,
+    "2": 14,
+    "3": 46,
+    "4": 79,
+    "5": 459
+  },
+  "timestamp_utc": "2026-05-29T18:55:06Z",
+  "base_model": "Qwen/Qwen3-4B-Instruct-2507",
+  "adapter": "arunma/monty3",
+  "judge_model": "claude-haiku-4-5-20251001",
+  "eval_backend": "transformers_batched",
+  "temperature": 0.7,
+  "top_p": 0.9,
+  "max_new_tokens": 512,
+  "prompts": 604
+}
