@@ -44,7 +44,7 @@ JUDGE_MAX_RETRIES = 3
 #                             vLLM 0.7+ + torch 2.6+ to work with Qwen3-4B.
 #   "transformers_batched"  — manual batching across TF_BATCH_SIZE prompts. ~4-6x.
 #   "transformers_single"   — original one-prompt-at-a-time loop. Baseline.
-EVAL_BACKEND = "vllm"
+EVAL_BACKEND = "transformers_batched"
 TF_BATCH_SIZE = 8           # used only by "transformers_batched"
 VLLM_GPU_MEMORY_UTIL = 0.85  # vLLM's KV cache pool size, fraction of VRAM
 
