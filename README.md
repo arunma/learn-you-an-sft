@@ -63,6 +63,16 @@ No flags. Want a different concurrency, adapter, or model? Edit the
 constants at the top of the relevant module — that's the whole knob-tuning
 interface.
 
+To run the eval end-to-end on a rented GPU (spin up → eval → scp reports
+back → terminate), set `RUNPOD_API_KEY` in `.env` then:
+
+```bash
+uv run python -m scripts.eval_on_pod
+```
+
+Reports land in `runs/eval_reports/`. Pod terminates in a `finally` block,
+so a crashed eval doesn't leave a billable GPU running.
+
 ---
 
 ## The five-axis rubric
