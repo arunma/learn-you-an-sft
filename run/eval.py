@@ -128,8 +128,15 @@ def _load_model():
     tokenizer = AutoTokenizer.from_pretrained(ADAPTER)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
+    # attn_implementation="eager" sidesteps cuDNN's fused attention. With cuDNN 9
+    # + bf16 + left-padded batched attention on Hopper, the frontend sometimes
+    # fails to build an execution plan and crashes. Eager attention is pure
+    # PyTorch matmul — slower per-token but works on every shape combination.
     base = AutoModelForCausalLM.from_pretrained(
-        BASE_MODEL, torch_dtype=torch.bfloat16, device_map="auto",
+        BASE_MODEL,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        attn_implementation="eager",
     )
     model = PeftModel.from_pretrained(base, ADAPTER)
     model.eval()
