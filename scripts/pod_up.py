@@ -42,7 +42,7 @@ except ImportError:
 
 REPO_URL = "https://github.com/arunma/learn-you-an-sft.git"
 REPO_DIR_ON_POD = "/workspace/learn-you-an-sft"
-DEFAULT_IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
+DEFAULT_IMAGE = "pytorch/pytorch:2.6.0-cuda12.6-cudnn9-devel"
 DEFAULT_GPU = "NVIDIA GeForce RTX 4090"
 DEFAULT_DISK_GB = 50
 POD_NAME = "learn-you-an-sft"
@@ -117,11 +117,8 @@ else
 fi
 mkdir -p data/processed runs/eval_reports
 uv sync
-echo ">>> Pinning torch 2.5.1+cu124 (matches RunPod image driver)..."
-uv pip install --force-reinstall \\
-    "torch==2.5.1" --index-url https://download.pytorch.org/whl/cu124
-echo ">>> Installing vLLM 0.6.x (compatible with torch 2.5)..."
-uv pip install "vllm>=0.6.0,<0.7.0"
+echo ">>> Installing vLLM 0.7+ (supports Qwen3, brings its own torch deps)..."
+uv pip install "vllm>=0.7.0"
 echo "SETUP DONE"
 """
 

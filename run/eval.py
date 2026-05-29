@@ -39,6 +39,9 @@ JUDGE_MAX_RETRIES = 3
 
 # Generation backend.
 #   "vllm"                  — continuous batching + paged attention. ~10-30x.
+#                             Note: vLLM 0.6.x (last torch-2.5-compat line)
+#                             only knows Qwen2ForCausalLM, not Qwen3. Needs
+#                             vLLM 0.7+ + torch 2.6+ to work with Qwen3-4B.
 #   "transformers_batched"  — manual batching across TF_BATCH_SIZE prompts. ~4-6x.
 #   "transformers_single"   — original one-prompt-at-a-time loop. Baseline.
 EVAL_BACKEND = "vllm"
