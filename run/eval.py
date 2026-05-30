@@ -39,12 +39,17 @@ JUDGE_MAX_RETRIES = 3
 
 # Generation backend.
 #   "vllm"                  — continuous batching + paged attention. ~10-30x.
-#                             Note: vLLM 0.6.x (last torch-2.5-compat line)
-#                             only knows Qwen2ForCausalLM, not Qwen3. Needs
-#                             vLLM 0.7+ + torch 2.6+ to work with Qwen3-4B.
+#                             Requires vLLM 0.7+ (Qwen3 support). On the
+#                             cached cu124 RunPod image, _generate_vllm
+#                             sets VLLM_USE_V1=0 and enforce_eager=True to
+#                             avoid the V1 engine's Hopper-FP8 / DeepGEMM
+#                             code path (no deep_gemm in the image).
 #   "transformers_batched"  — manual batching across TF_BATCH_SIZE prompts. ~4-6x.
+#                             Falls back to eager attention in _load_model
+#                             to dodge cuDNN's "no execution plan" bug on
+#                             H100 + bf16 + left-padded batches.
 #   "transformers_single"   — original one-prompt-at-a-time loop. Baseline.
-EVAL_BACKEND = "transformers_batched"
+EVAL_BACKEND = "vllm"
 TF_BATCH_SIZE = 8           # used only by "transformers_batched"
 VLLM_GPU_MEMORY_UTIL = 0.85  # vLLM's KV cache pool size, fraction of VRAM
 
@@ -238,7 +243,18 @@ def _generate_vllm(pairs) -> list[Generation]:
     Doesn't reuse our transformers/peft model. vLLM loads the base from HF
     itself and applies the LoRA adapter via LoRARequest. The adapter has to
     live on local disk, so we snapshot_download it first.
+
+    Two env-var-y knobs to keep this working on the cached cu124 RunPod
+    image (driver supports up to CUDA 12.4):
+      - VLLM_USE_V1=0 falls back to vLLM's V0 engine. V1's engine probes
+        Hopper for FP8 capability and tries DeepGEMM kernels — not in the
+        image. V0 skips that path.
+      - enforce_eager=True turns off CUDA-graph capture. Loses ~5-15%
+        throughput vs graphs but works on any driver/kernel combo.
     """
+    # Must be set before the vllm import — VLLM_USE_V1 is read at module load.
+    os.environ.setdefault("VLLM_USE_V1", "0")
+
     # Lazy import — vLLM is Linux+CUDA only, so the module fails to load on Mac.
     from huggingface_hub import snapshot_download
     from vllm import LLM, SamplingParams
@@ -255,6 +271,7 @@ def _generate_vllm(pairs) -> list[Generation]:
         max_lora_rank=16,
         dtype="bfloat16",
         gpu_memory_utilization=VLLM_GPU_MEMORY_UTIL,
+        enforce_eager=True,
     )
     sampling_params = SamplingParams(
         temperature=GEN_TEMPERATURE,
